@@ -23,9 +23,13 @@
 - [x] pmbootstrap 3.11.1 手动配置完成 (console, PB1-770N)
 - [x] pmaports main (edge) 已 clone, 确认通用包存在
 - [x] 参考 DTS 已拷到 reference-dts/
-- [ ] TWRP 备份 boot/recovery/modemst/persist
-- [ ] 提取 panel/touch 型号
-- [ ] 写初始 DTS + lk2nd 测试
+- [x] TWRP 备份 boot/recovery/modemst/persist (sha256 已记录, /tmp/opencode/phoenix-backup/)
+- [x] 提取硬件: panel nt35532 skuk 1080x1920 / touch gt9xx i2c6-005d reset12 irq13 / vol107 hall117 sd38 usb110
+- [x] 下游 DTB 已拆出反编译为 downstream-phoenix.dts (含完整 panel on-command)
+- [x] 初版 msm8939-lenovo-phoenix.dts 已通过 cpp+dtc 编译 (48K, 仅常规 warnings)
+- [x] lk2nd 23.1 msm8916 fastboot boot 通过, 重启回 Android 正常
+- [ ] panel NT35532 初始化序列移植到主线驱动
+- [ ] DTS 进 msm8916-mainline/linux + pmaports kernel 打包
 - [ ] pmbootstrap install console + USB 调试
 
 ## 快速命令
