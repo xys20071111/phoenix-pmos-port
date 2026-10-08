@@ -7,8 +7,10 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
 
 #include <video/mipi_display.h>
 
@@ -1273,11 +1275,12 @@ static int nt35532_probe(struct mipi_dsi_device *dsi)
 	struct novatek_nt35532 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct novatek_nt35532, panel,
-				   &novatek_nt35532_panel_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	drm_panel_init(&ctx->panel, dev, &novatek_nt35532_panel_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	ctx->desc = device_get_match_data(dev);
 
