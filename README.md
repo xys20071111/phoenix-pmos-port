@@ -28,9 +28,13 @@
 - [x] 下游 DTB 已拆出反编译为 downstream-phoenix.dts (含完整 panel on-command)
 - [x] 初版 msm8939-lenovo-phoenix.dts 已通过 cpp+dtc 编译 (48K, 仅常规 warnings)
 - [x] lk2nd 23.1 msm8916 fastboot boot 通过, 重启回 Android 正常
+- [x] 通用 console 镜像打出来了 (1.3G, 用户终端 pmbootstrap install 成功)
+- [x] 组合镜像拆出 boot-part(487M pmOS_boot ext2) + root-part(759M pmOS_root ext4), UUID 与 cmdline 一致
+- [x] 根因定位: lk2nd 只扫描整盘叶子分区, userdata 嵌套 MBR 不可见; 且 phoenix 的 lk2nd,dtb-files 被注释 (等主线 DTS), 有 fdtdir 无 fdt 时 expand_conf 直接拒绝
+- [x] 手工刷入: lk2nd->boot, boot-part->system (已验超块/label), root-part->userdata
+- [ ] 用 surrogate DTB (samsung-a7) 启动验证 SoC/USB (extlinux.conf 加 fdt, 去掉 fdtdir)
 - [ ] panel NT35532 初始化序列移植到主线驱动
-- [ ] DTS 进 msm8916-mainline/linux + pmaports kernel 打包
-- [ ] pmbootstrap install console + USB 调试
+- [ ] DTS 进 msm8916-mainline/linux + pmaports kernel 打包 + lk2nd hints 解注释
 
 ## 快速命令
 ```
