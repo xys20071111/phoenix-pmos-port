@@ -43,3 +43,8 @@ pmbootstrap -y --as-root zap -p  # 需 sudo 密码，build 前执行
 pmbootstrap install --fde --no-firewall --add ssh-server-dropbear
 pmbootstrap flasher flash_lk2nd
 ```
+
+## 环境注意
+- /tmp 会被系统清理, 关键镜像放 images/ 与 backups/ (已 gitignore, 只存本地不提交)。
+  images/ 内是 13:33 那次 install 的拆分镜像 (默认 extlinux.conf, 需手动改 fdt)。
+- pmbootstrap chroot 异常时重启电脑恢复 (13:33 install 的包不受影响)。
