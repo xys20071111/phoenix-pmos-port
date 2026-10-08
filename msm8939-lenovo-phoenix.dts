@@ -239,7 +239,11 @@
 };
 
 &wcnss {
-	status = "okay";
+	/* BRINGUP: disabled - WCNSS PIL crash-loops (watchdog task starvation,
+	 * no NV) and pins rtnl (getty stuck in rtnl_dumpit). /boot currently
+	 * runs a locally-built nowcnss DTB variant. Re-enable with pronto
+	 * firmware + NV config when doing WiFi/modem. */
+	status = "disabled";
 };
 
 &wcnss_iris {
