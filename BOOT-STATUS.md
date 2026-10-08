@@ -20,3 +20,8 @@
 - /dev/input/event5 12秒 tapped 文件变大, Goodix 上报正常
 - fb0 存在但 blank 无效: 无 panel 驱动, 背光/电源不可控, 系意料之中
 - 面板残影: 关机静置消退, panel 驱动为下一优先级
+
+## 显示点亮 (2026-10-09)
+- r9 内核 + phoenix DTB + 自研 NT35532 驱动, 屏幕正常点亮无花屏
+- 强制亮度 0xff 生效, fb0 + fbcon 接管, 屏幕可见闪烁登录光标
+- 仍待办: 背光驱动(亮度不可调), GPU 固件(a420), WiFi NV, modem, sensors
