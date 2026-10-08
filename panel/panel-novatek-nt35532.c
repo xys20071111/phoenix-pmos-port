@@ -7,7 +7,6 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/property.h>
 #include <linux/regulator/consumer.h>
 
@@ -1146,7 +1145,7 @@ static int phoenix_panel_on(struct novatek_nt35532 *ctx)
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xff, 0xee);
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x30, 0x60);
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xff, 0x00);
-	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x51, 0x00);
+	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x51, 0xff);
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x53, 0x24);
 	mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x55, 0x03);
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
@@ -1274,13 +1273,13 @@ static int nt35532_probe(struct mipi_dsi_device *dsi)
 	struct novatek_nt35532 *ctx;
 	int ret;
 
-	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
+	ctx = devm_drm_panel_alloc(dev, struct novatek_nt35532, panel,
+				   &novatek_nt35532_panel_funcs,
+				   DRM_MODE_CONNECTOR_DSI);
+	if (IS_ERR(ctx))
+		return PTR_ERR(ctx);
 
 	ctx->desc = device_get_match_data(dev);
-	if (!ctx->desc)
-		return dev_err_probe(dev, -ENODEV, "Failed to get panel desc\n");
 
 	ret = devm_regulator_bulk_get_const(dev,
 					    ARRAY_SIZE(nt35532_supplies),
@@ -1302,8 +1301,6 @@ static int nt35532_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_LPM;
 
-	drm_panel_init(&ctx->panel, dev, &novatek_nt35532_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
 	ctx->panel.prepare_prev_first = true;
 
 	ret = drm_panel_of_backlight(&ctx->panel);

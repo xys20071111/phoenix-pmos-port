@@ -521,7 +521,8 @@ mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xd8, 0x7e);
 mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xff, 0xee);
 mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x30, 0x60);
 mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0xff, 0x00);
-mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x51, 0x00);
+/* BRINGUP: downstream inits brightness 0x00 (Android raises it later); force full until backlight driver exists */
+mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x51, 0xff);
 mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x53, 0x24);
 mipi_dsi_generic_write_seq_multi(&dsi_ctx, 0x55, 0x03);
 mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
