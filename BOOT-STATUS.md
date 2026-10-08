@@ -15,3 +15,8 @@
   pm8xxx_vib, Goodix TouchScreen@78ba000(blsp_i2c6,0x5d,event5)
 - AVDD28<=l17/VDDIO<=l6 假设正确, 触摸 probe 成功
 - 无 fb0 (panel 驱动待做), battery 无读数, load 偏高 (modem crash 循环, 后续关 modem 或修固件)
+
+## 触摸事件确认
+- /dev/input/event5 12秒 tapped 文件变大, Goodix 上报正常
+- fb0 存在但 blank 无效: 无 panel 驱动, 背光/电源不可控, 系意料之中
+- 面板残影: 关机静置消退, panel 驱动为下一优先级
