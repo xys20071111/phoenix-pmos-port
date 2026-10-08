@@ -1,0 +1,10 @@
+# 首次启动成功 (2026-10-08, surrogate kiwi DTB)
+
+- ssh user@172.16.42.1 通, hostname phoenix, kernel 6.12.1-msm8916
+- USB RNDIS 通, eMMC/分区 UUID 挂载正常 (pmOS_boot on mmcblk0p22, pmOS_root on userdata)
+- WCNSS remoteproc 能起来, wcn36xx 报 NV 超时 (surrogate 意料之中)
+- 传感器/功放按 a7/kiwi 节点探测失败 (意料之中, phoenix 是 bma2x2/ltr559/mmc3524x)
+- 屏幕花屏 (panel 不匹配, 意料之中)
+- modem watchdog crash/recover 循环 (固件/配置待调)
+
+结论: SoC 主线链路全通, 只差板级 DTS (panel/touch/sensor/modem)。
