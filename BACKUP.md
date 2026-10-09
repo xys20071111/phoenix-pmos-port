@@ -3,7 +3,7 @@
  cihaz 已接受清空，但 boot/modem/persist 必须先备份，否则变砖无法恢复基带。
 
 1. 手机进 TWRP (Lineage 自带 recovery 或已刷 TWRP):
-   adb -s 9cc6e40d reboot recovery
+   adb -s $SERIAL reboot recovery
 
 2. recovery 下确认 root shell:
    adb shell id   # 应为 uid=0(root)
