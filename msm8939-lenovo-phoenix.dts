@@ -291,10 +291,10 @@
 };
 
 &wcnss {
-	/* NOTE: needs iris supplies below + factory WLAN NV in
-	 * /lib/firmware/wlan/prima, else NV download times out and the
-	 * WCNSS watchdog crash-loops (and pins rtnl). */
-	status = "okay";
+	/* BRINGUP disabled: WCNSS PIL crash-loops (watchdog starvation, zero
+	 * WLAN_CTRL response) and wedges rtnl. Re-enable with firmware fix.
+	 * See WIFI.md. */
+	status = "disabled";
 };
 
 &wcnss_iris {
