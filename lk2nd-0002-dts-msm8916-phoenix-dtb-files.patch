@@ -1,0 +1,10 @@
+--- a/lk2nd/device/dts/msm8916/msm8939-qrd-skuk.dts
++++ b/lk2nd/device/dts/msm8916/msm8939-qrd-skuk.dts
+@@ -46,6 +46,6 @@
+ 		compatible = "lenovo,phoenix";
+ 		lk2nd,match-cmdline = "* mdss_mdp.panel=1:dsi:0:qcom,mdss_dsi_nt35532_1080p_skuk_video:1:none*";
+ 
+-		//FIXME: lk2nd,dtb-files = "msm8939-lenovo-phoenix";
++		lk2nd,dtb-files = "msm8939-lenovo-phoenix";
+ 	};
+ };
