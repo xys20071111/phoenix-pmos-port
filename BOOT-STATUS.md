@@ -49,3 +49,8 @@
   且 adreno 驱动用运行时请求 (无 MODULE_FIRMWARE), mkinitfs 没收录 -> 加载失败.
 - 另缺 vdd/vddcx regulator (dummy), 及 bind/unbind 热重载不支持 (-EBUSY).
 - 3D 加速等上图形界面时再搞 (initramfs 固件列表 + 电源域).
+
+## 标准流程打通 (2026-10-09)
+- lk2nd 23.1-r1 (dtb-files patch) 刷入 boot, fdtdir 自动发现 phoenix DTB.
+- fbkeyboard UI 安装启动成功, 无需任何 TWRP 手工修改.
+- 完整链路: pmbootstrap install -> split-image.sh -> fastboot flash -> boot.
