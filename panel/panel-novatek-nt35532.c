@@ -4,6 +4,7 @@
  * Copyright (c) 2026 Cristian Cozzolino <cristian_ci@protonmail.com>
  */
 
+#include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -1269,6 +1270,18 @@ static const struct drm_panel_funcs novatek_nt35532_panel_funcs = {
 	.get_modes = nt35532_get_modes,
 };
 
+static int nt35532_bl_update_status(struct backlight_device *bl)
+{
+	struct mipi_dsi_device *dsi = bl_get_data(bl);
+	u16 brightness = backlight_get_brightness(bl);
+
+	return mipi_dsi_dcs_set_display_brightness(dsi, brightness);
+}
+
+static const struct backlight_ops nt35532_bl_ops = {
+	.update_status = nt35532_bl_update_status,
+};
+
 static int nt35532_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
@@ -1309,6 +1322,28 @@ static int nt35532_probe(struct mipi_dsi_device *dsi)
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to get backlight\n");
+
+	if (!ctx->panel.backlight) {
+		struct backlight_properties props;
+		struct backlight_device *bl;
+
+		/* No backlight node in DT (downstream drives brightness
+		 * via DCS). Provide a DCS backlight so blanking and
+		 * /sys/class/backlight work. */
+		memset(&props, 0, sizeof(props));
+		props.type = BACKLIGHT_RAW;
+		props.max_brightness = 255;
+		props.brightness = 255;
+
+		bl = devm_backlight_device_register(dev, dev_name(dev), dev,
+						    dsi, &nt35532_bl_ops,
+						    &props);
+		if (IS_ERR(bl))
+			return dev_err_probe(dev, PTR_ERR(bl),
+					     "Failed to register backlight\n");
+
+		ctx->panel.backlight = bl;
+	}
 
 	drm_panel_add(&ctx->panel);
 
