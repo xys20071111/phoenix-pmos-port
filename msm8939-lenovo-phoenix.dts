@@ -239,15 +239,21 @@
 };
 
 &wcnss {
-	/* BRINGUP: disabled - WCNSS PIL crash-loops (watchdog task starvation,
-	 * no NV) and pins rtnl (getty stuck in rtnl_dumpit). /boot currently
-	 * runs a locally-built nowcnss DTB variant. Re-enable with pronto
-	 * firmware + NV config when doing WiFi/modem. */
-	status = "disabled";
+	/* NOTE: needs iris supplies below + factory WLAN NV in
+	 * /lib/firmware/wlan/prima, else NV download times out and the
+	 * WCNSS watchdog crash-loops (and pins rtnl). */
+	status = "okay";
 };
 
 &wcnss_iris {
 	compatible = "qcom,wcn3620";
+	/* RF rails from downstream (iris-vddxo=l7, vddrfa=s3, vddpa=l9, vdddig=l5).
+	 * Without these the driver takes dummy regulators, RF stays dark and
+	 * NV download times out -> WCNSS watchdog. */
+	vddxo-supply = <&pm8916_l7>;
+	vddrfa-supply = <&pm8916_s3>;
+	vddpa-supply = <&pm8916_l9>;
+	vdddig-supply = <&pm8916_l5>;
 };
 
 &wcnss_mem {
