@@ -1166,11 +1166,16 @@ static int nt35532_off(struct novatek_nt35532 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
+	/* BRINGUP-DEBUG */
+	dev_info(ctx->dsi->dev, "nt35532_off: entry\n");
+
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 50);
 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 120);
 
+	/* BRINGUP-DEBUG */
+	dev_info(ctx->dsi->dev, "nt35532_off: accum_err=%d\n", dsi_ctx.accum_err);
 	return dsi_ctx.accum_err;
 }
 
@@ -1274,8 +1279,13 @@ static int nt35532_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness = backlight_get_brightness(bl);
+	int ret;
 
-	return mipi_dsi_dcs_set_display_brightness(dsi, brightness);
+	/* BRINGUP-DEBUG */
+	dev_info(&dsi->dev, "bl_update_status: brightness=%u\n", brightness);
+	ret = mipi_dsi_dcs_set_display_brightness(dsi, brightness);
+	dev_info(&dsi->dev, "bl_update_status: dcs ret=%d\n", ret);
+	return ret;
 }
 
 static const struct backlight_ops nt35532_bl_ops = {
