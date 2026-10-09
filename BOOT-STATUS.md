@@ -42,3 +42,10 @@
   可能原因: 增益/使能细节与下游驱动不一致. PARK, 以后对比寄存器.
 - mmc3524x @0x30: 无主线驱动 (mmc35240 是另一颗芯片), 跳过.
 - avago/mpu6050/mc3xxx: 本机未焊接 (i2c 无对应地址).
+
+## GPU (Adreno 405) 状态 - PARKED
+- 显示 (MDP/fbcon) 不需要 GPU, 正常.
+- a420_pm4/pfp 固件文件齐全, 但请求发生在 initramfs 阶段 (root 8s 才挂载),
+  且 adreno 驱动用运行时请求 (无 MODULE_FIRMWARE), mkinitfs 没收录 -> 加载失败.
+- 另缺 vdd/vddcx regulator (dummy), 及 bind/unbind 热重载不支持 (-EBUSY).
+- 3D 加速等上图形界面时再搞 (initramfs 固件列表 + 电源域).
