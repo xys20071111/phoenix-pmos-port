@@ -27,6 +27,16 @@
 		serial0 = &blsp_uart2;
 	};
 
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion-polymer";
+		/* downstream: v-cutoff 3.4V, float 4.35V, PHAB Plus 3400mAh */
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+		charge-full-design-microamp-hours = <3400000>;
+	};
+
 	chosen {
 		stdout-path = "serial0";
 	};
@@ -186,6 +196,11 @@
 
 &mdss_dsi0_phy {
 	qcom,dsi-phy-regulator-ldo-mode;
+	status = "okay";
+};
+
+&pm8916_bms {
+	monitored-battery = <&battery>;
 	status = "okay";
 };
 
