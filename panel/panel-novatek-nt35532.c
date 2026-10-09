@@ -1279,12 +1279,13 @@ static int nt35532_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness = backlight_get_brightness(bl);
-	int ret;
+	u8 brightness8 = brightness;
+	ssize_t ret;
 
 	/* BRINGUP-DEBUG */
 	dev_info(&dsi->dev, "bl_update_status: brightness=%u\n", brightness);
-	ret = mipi_dsi_dcs_write_seq(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-				       brightness);
+	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				 &brightness8, sizeof(brightness8));
 	dev_info(&dsi->dev, "bl_update_status: dcs ret=%zd\n", ret);
 	return ret < 0 ? ret : 0;
 }
