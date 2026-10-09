@@ -91,7 +91,44 @@
 &blsp_i2c2 {
 	status = "okay";
 
-	/* downstream: bma2x2@0x18, ltr559@0x23, mmc3524x@0x30 (TODO sensors) */
+	/* PB1-770N populated: bma2x2 + ltr559 + mmc3524x (+tps65132).
+	 * (full variant list in downstream-pb1770m/msm8939-qrd-pb1770m.dtsi:
+	 *  apds9930/mp6050/mc3xxx are NOT populated on this unit.) */
+
+	accelerometer@18 {
+		/* downstream bosch,bma2x2, int1=112 int2=114, place=6 */
+		compatible = "bosch,bma255";
+		reg = <0x18>;
+
+		interrupts-extended = <&tlmm 112 IRQ_TYPE_EDGE_RISING>,
+				      <&tlmm 114 IRQ_TYPE_EDGE_RISING>;
+
+		vdd-supply = <&pm8916_l17>;
+		vddio-supply = <&pm8916_l6>;
+
+		/* TODO: verify orientation live, then add mount-matrix
+		 * (downstream place=6). */
+
+		pinctrl-0 = <&accel_int_default>;
+		pinctrl-names = "default";
+	};
+
+	light-sensor@23 {
+		compatible = "liteon,ltr559";
+		reg = <0x23>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <115 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-0 = <&light_int_default>;
+		pinctrl-names = "default";
+
+		vdd-supply = <&pm8916_l17>;
+		vddio-supply = <&pm8916_l6>;
+	};
+
+	/* memsic,mmc3524x@0x30: no mainline driver (mmc35240 is a
+	 * different chip). Skipped, revisit if a driver appears. */
 
 	regulator@3e {
 		compatible = "ti,tps65132";
@@ -288,6 +325,20 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-up;
+	};
+
+	accel_int_default: accel-int-default-state {
+		pins = "gpio112", "gpio114";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	light_int_default: light-int-default-state {
+		pins = "gpio115";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	mdss_default: mdss-default-state {
