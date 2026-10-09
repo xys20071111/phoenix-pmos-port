@@ -25,3 +25,8 @@
 - r9 内核 + phoenix DTB + 自研 NT35532 驱动, 屏幕正常点亮无花屏
 - 强制亮度 0xff 生效, fb0 + fbcon 接管, 屏幕可见闪烁登录光标
 - 仍待办: 背光驱动(亮度不可调), GPU 固件(a420), WiFi NV, modem, sensors
+
+## 教训: mkinitfs 会重置 /boot
+- mkinitfs 重写 extlinux.conf (fdt 行丢失) + 从内核包恢复 DTB, 导致回 lk2nd 菜单.
+- 之后每次动 /boot (mkinitfs/升级内核) 都要重做: nowcnss DTB + fdt 行.
+- 根治: lk2nd dtb-files 解注释 (fdtdir 自发现) + WiFi 修好后 wcnss 回归源码.
