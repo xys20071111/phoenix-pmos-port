@@ -35,3 +35,10 @@
 - 根因: mipi_dsi_dcs_set_display_brightness 发 2 字节, NT35532 只要 1 字节.
 - 改用 mipi_dsi_dcs_write 单字节后 /sys/class/backlight 调光正常.
 - 注意: 跑的是 initramfs 里的驱动, 换 ko 必须重打 initramfs (且会重置 /boot 定制).
+
+## 传感器状态 (2026-10-09)
+- bma255 (bma2x2) @0x18: probe 成功, 晃动有读数. mount-matrix 待实测校准 (下游 place=6).
+- ltr559 @0x23: probe 成功 (iio:device1), 但 ALS/PS/IR 通道恒为 0.
+  可能原因: 增益/使能细节与下游驱动不一致. PARK, 以后对比寄存器.
+- mmc3524x @0x30: 无主线驱动 (mmc35240 是另一颗芯片), 跳过.
+- avago/mpu6050/mc3xxx: 本机未焊接 (i2c 无对应地址).
