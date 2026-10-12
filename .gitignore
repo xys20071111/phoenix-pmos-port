@@ -6,3 +6,4 @@ firmware-factory/
 otg/*.diff
 panel/upstream-*
 .commandcode/
+stock-wcnss/
