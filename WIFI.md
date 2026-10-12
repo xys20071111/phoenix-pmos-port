@@ -19,6 +19,8 @@
 - DTB: 自研 phoenix DTB 与 kiwi/a7 surrogate 行为一致 (通道级问题, 非板级).
 - stock 原厂 DTB 交叉验证: panel 初始化仅差 2 字节 gamma + 1 条命令;
   wcnss/iris/USB/传感器供电映射与我方一致, DTS 参数可信.
+- 决定性对照: wcnss_ctrl 自身的 NV 下发 (同文件, WCNSS_CTRL 通道) 无报错,
+  死的只是 WLAN_CTRL (wcn36xx) —— 通道级隔离完成.
 - WCNSS 固件文件齐全 (modem 分区 wcnss.mdt + b00/b01/b02/b04/b06/b09/b10/b11).
 
 ## 抓包 (SMD_DUMP)
@@ -28,8 +30,13 @@
 ## 待试 (按优先级)
 1. 带数据去 #msm8916 问两个尖锐问题:
    a. 当前主线 6.x 上还有能跑的 pronto WLAN (wcn36xx) 设备吗?
-      (怀疑整条 WLAN_CTRL 路径在新固件/新内核下已无人验证.)
-   b. WCN3620 vs WCN3660 如何区分? (若本机实为 3660, RF 初始化全错.)
+      (tulip/piccolo wiki 标 working, 但本机零回包.)
+   b. WCN3620 vs WCN3660 如何区分?
+      - 供电压倒 3620 (vddxo=l7 1.8V, vddrfa=s3 1.3V, vddpa=l9 3.3V,
+        vdddig=l5 1.8V; stock DTB 花括号严格匹配确认, 非就近归属).
+      - 但 tulip (同 MSM8939!) 用的是 wcn3660. 若本机实为 3660,
+        RF 初始化全错 (l9 固定 3.3V 设不到 2.9-3.0, l5 1.8V 对 1.2V).
+      - 判定法: 拆机看 RF 芯丝印, 或试 wcn3660 看 probe 报什么.
 2. 黑名单测试结论: wcn36xx 拉黑后 PIL 根本不起 (无 crash, idle) —
    说明 remoteproc 启动由 wcn36xx 触发, crash 需要 NV 交互.
    (测试后 extlinux 已清 module_blacklist, /boot 已换回 nowcnss.)
