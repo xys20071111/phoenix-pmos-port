@@ -8,10 +8,14 @@
 - 附带伤害: crash 循环会永久攥住 rtnl 锁 (`ip`/`getty` 卡死在 rtnl_dumpit D 状态).
 
 ## 已排除
-- NV 文件内容: 原厂 persist 版 (29KB, 稀疏) 与 db410c 版 (31KB, CAFEBABE+dense) 行为完全一致.
-- RF 供电: 下游反推出 iris 四路 (vddxo=l7 1.8V, vddrfa=s3 1.3V, vddpa=l9 3.3V,
-  vdddig=l5 1.8V), 已接入 DTS, 无 dummy 警告, 行为不变.
-- iris 写法: 与树内正常设备一致 (wcnss 子节点 + compatible), probe 无报错.
+- NV 文件内容: 原厂 persist 版 (29KB, 无魔数, 稀疏) 与 db410c 版 (31KB,
+  CAFEBABE+dense) 行为完全一致.
+- WCNSS 固件版本: modem 分区版 (2016, M8936FAAAANUZM) 与 stock 线刷包版 (2015)
+  行为完全一致 (OVERRIDE 机制验证生效, 版本查询同为 1.5/1.2).
+  stock 固件从 `/mnt/local_data/pb1-770n/NON-HLOS.bin` 提取, 工具见 `fatread.py`.
+- RF 供电: 下游反推 iris 四路 (vddxo=l7, vddrfa=s3, vddpa=l9, vdddig=l5),
+  stock DTB 交叉确认一致, 无 dummy 警告, 行为不变.
+- iris 写法: 与树内正常设备一致, probe 无报错.
 - DTB: 自研 phoenix DTB 与 kiwi/a7 surrogate 行为一致 (通道级问题, 非板级).
 - WCNSS 固件文件齐全 (modem 分区 wcnss.mdt + b00/b01/b02/b04/b06/b09/b10/b11).
 
@@ -20,12 +24,10 @@
 - RX: 无.
 
 ## 待试 (按优先级)
-1. 带数据去 #msm8916 问: 同样 zero-RX 的 pronto 案例? (怀疑 2016 版 Lenovo WCNSS
-   固件与主线 DOWNLOAD_NV 协议对不上, 或 RF 实为 WCN3660.)
-2. 试 iris compatible 换 wcn3660 (注意 vddpa 2.9-3.0V / vdddig 1.2V, l9 固定 3.3V
-   可能设压失败, 先看 probe 报什么).
-3. 下游 TWRP dmesg 找 prima RF 版本行 (TWRP 不起 WiFi, 没抓到).
-4. BT 是否活 (同 WCNSS, 另一通道): 若 BT 活则是 WLAN HAL 任务专属问题.
+1. NV 触发 vs 自爆判定: cmdline `module_blacklist=wcn36xx` 后看还崩不崩.
+   - 还崩 = 固件/RF 自爆 (硬件或基础环境问题).
+   - 不崩 = NV 交互触发 (协议问题, 抓单次现场深挖).
+2. 带数据去 #msm8916 问: 同样 zero-RX 的 pronto 案例?
 
 ## 当前状态
 - /boot 跑 nowcnss DTB (wcnss disabled), 系统健康, getty/ssh/`ip` 正常.
