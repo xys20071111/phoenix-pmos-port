@@ -89,3 +89,10 @@
   xwd profile 低电量段差最多 ~100mV, 若低电量不准再换. charge-full 按下游 fcc
   纠正为 3500mAh. 验证: 刚下充电器应 ~100%, 用一会看电压-百分比曲线合理否.
 - 遗留: STATUS 恒 discharging (lbc charger 未接, 同 wt82918 现状), 仅显示问题.
+
+## 电池 snap-down 补丁 (2026-10-14, 待验证)
+- 现象: 拔充电器后 4043mV 仍显示 97% (按表应 ~74%).
+- 根因: 驱动只有 snap-up 没有 snap-down; 拔线瞬间 4.35V浮充->OCV 跌 ~0.3V,
+  超过 25mV guard 被丢弃, fake_ocv 全程 stranded 高位, 越用越虚 (会死在显示 25%).
+- 修法: power/pm8916-bms-vm-fake-ocv-snap.patch, 放电且 gap>100mV 时 snap 到 vbat.
+  负载瞬时下垂误触发也无妨 (snap-up 会自己纠回来). 已 dry-run 验证可打上.

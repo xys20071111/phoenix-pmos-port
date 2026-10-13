@@ -1,0 +1,18 @@
+--- a/drivers/power/supply/pm8916_bms_vm.c
++++ b/drivers/power/supply/pm8916_bms_vm.c
+@@ -173,4 +173,15 @@ static irqreturn_t pm8916_bms_vm_fifo_update_done_irq(int irq, void *data)
+ 	if (!supplied && bat->fake_ocv < bat->vbat_now)
+ 		bat->fake_ocv = bat->vbat_now;
++
++	/* While discharging, a sudden large drop (e.g. charger unplugged:
++	 * float voltage collapses to OCV, ~0.3V at once) exceeds the 25mV
++	 * guard above and there is no snap-down rule, so fake_ocv would stay
++	 * stranded high for the whole discharge cycle, overestimating SoC by
++	 * 20+ points (phone dies at displayed ~25%). Snap down to follow the
++	 * battery. The snap-up rule above re-corrects if this ever overshoots
++	 * on a transient load sag, and the 100mV threshold keeps normal
++	 * ripple untouched. */
++	if (!supplied && bat->fake_ocv > bat->vbat_now + 100000)
++		bat->fake_ocv = bat->vbat_now;
+ 	regmap_write(bat->regmap, bat->reg + PM8916_BMS_VM_STATUS1, 0);
+ 	regmap_read(bat->regmap, bat->reg + PM8916_BMS_VM_STATUS1, &tmp);
