@@ -67,3 +67,9 @@
 - 根因: iris compatible 误写 wcn3620, PMU 给 RF 配 19.2MHz XO,
   芯片要 48MHz (固件自报 vIris_TSMC_4.0 with 48MHz XO) -> RF 死寂.
 - 改 qcom,wcn3680 后 NV 通过/crash 消失/wlan0/扫描全通. 详见 WIFI.md.
+
+## GPU 尝试 (2026-10-13)
+- MODULE_FIRMWARE 声明进了 ko 但 mkinitfs 不收录, initramfs 里依然无固件.
+- 改策略: initramfs 里去掉 msm (无 FDE, 早几秒显示无所谓),
+  让 GPU 在根文件系统挂载后加载, 固件现成.
+- 若成功, 显示会晚几秒出现 (lk2nd splash 顶着).
