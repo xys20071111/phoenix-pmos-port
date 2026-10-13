@@ -7,3 +7,4 @@ otg/*.diff
 panel/upstream-*
 .commandcode/
 stock-wcnss/
+*.elf

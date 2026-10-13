@@ -9,10 +9,10 @@ Mainline Linux port of postmarketOS for the Lenovo PHAB Plus
 Working: display (Novatek NT35532 mainline driver, ported init sequence),
 backlight/brightness, touchscreen (Goodix GT9xx), volume keys, hall sensor,
 vibrator, eMMC, SD slot, USB networking + SSH, battery voltage, accelerometer,
-WiFi (WCN3680, dual-band), poweroff/reboot.
+WiFi (WCN3680, dual-band), GPU 3D (Adreno 405 / freedreno FD405), poweroff/reboot.
 
 Parked: USB OTG (see `otg/OTG.md`), light sensor (probes, reads zero),
-GPU 3D accel, modem calls, GPS, camera, magnetometer (no mainline driver).
+modem calls, GPS, camera, magnetometer (no mainline driver).
 
 ## Contents
 
@@ -41,7 +41,11 @@ Copy `msm8939-lenovo-phoenix.dts`, `panel/panel-novatek-nt35532.c`,
 `panel/panel-novatek-nt35532.kconfig` and `power/qcom-pon.c` into
 `device/testing/linux-postmarketos-qcom-msm8916`, wire them up in
 `APKBUILD` `prepare()` (see git history), enable
-`CONFIG_DRM_PANEL_NOVATEK_NT35532`, build, install, then:
+`CONFIG_DRM_PANEL_NOVATEK_NT35532`. Also drop `msm` from the
+`device-qcom-msm8916` package's `modules-initfs`: the Adreno firmware is only
+available once the root filesystem is mounted, so the GPU must probe
+post-pivot (display then comes up a few seconds late, behind the lk2nd
+splash). Build, install, then:
 
 ```
 ./split-image.sh <qcom-msm8916.img> ./images

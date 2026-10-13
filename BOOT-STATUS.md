@@ -43,13 +43,6 @@
 - mmc3524x @0x30: 无主线驱动 (mmc35240 是另一颗芯片), 跳过.
 - avago/mpu6050/mc3xxx: 本机未焊接 (i2c 无对应地址).
 
-## GPU (Adreno 405) 状态 - PARKED
-- 显示 (MDP/fbcon) 不需要 GPU, 正常.
-- a420_pm4/pfp 固件文件齐全, 但请求发生在 initramfs 阶段 (root 8s 才挂载),
-  且 adreno 驱动用运行时请求 (无 MODULE_FIRMWARE), mkinitfs 没收录 -> 加载失败.
-- 另缺 vdd/vddcx regulator (dummy), 及 bind/unbind 热重载不支持 (-EBUSY).
-- 3D 加速等上图形界面时再搞 (initramfs 固件列表 + 电源域).
-
 ## 标准流程打通 (2026-10-09)
 - lk2nd 23.1-r1 (dtb-files patch) 刷入 boot, fdtdir 自动发现 phoenix DTB.
 - fbkeyboard UI 安装启动成功, 无需任何 TWRP 手工修改.
@@ -68,8 +61,12 @@
   芯片要 48MHz (固件自报 vIris_TSMC_4.0 with 48MHz XO) -> RF 死寂.
 - 改 qcom,wcn3680 后 NV 通过/crash 消失/wlan0/扫描全通. 详见 WIFI.md.
 
-## GPU 尝试 (2026-10-13)
-- MODULE_FIRMWARE 声明进了 ko 但 mkinitfs 不收录, initramfs 里依然无固件.
-- 改策略: initramfs 里去掉 msm (无 FDE, 早几秒显示无所谓),
-  让 GPU 在根文件系统挂载后加载, 固件现成.
-- 若成功, 显示会晚几秒出现 (lk2nd splash 顶着).
+## GPU (Adreno 405) 3D 成功 (2026-10-13)
+- 显示 (MDP/fbcon) 本就不依赖 GPU, 一直正常.
+- 根因: a420_pm4/pfp 请求发生在 initramfs 阶段 (root 约 8s 才挂载),
+  而 adreno 驱动是运行时 request_firmware (无 MODULE_FIRMWARE), mkinitfs 不收录固件
+  -> initramfs 里必失败且无重试 (后来补 MODULE_FIRMWARE 声明, mkinitfs 仍不认).
+- 另缺 vdd/vddcx regulator (dummy 顶着), bind/unbind 热重载不支持 (-EBUSY).
+- 正解: initramfs 里去掉 msm (无 FDE, 显示晚几秒无所谓), GPU 改在根文件系统阶段加载.
+- 验证: kmscube -> freedreno FD405 / GLES 3.0 / 60fps vsync.
+- 遗留: 花屏窗口变长 (待解), INTF1 空接口下溢噪音 (0x04000000, lk2nd 残留, 无害).

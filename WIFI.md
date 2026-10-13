@@ -49,32 +49,14 @@
   的结果, 不是某个任务忙死. BT 同样无响应佐证 RF/任务级问题.
 - coredump 本体 6MB 留本地 (`wcnss-crash.elf`, 已 gitignore, 专有固件不进仓库).
 
-## 待办 (问社区时带上)
-1. 带数据去 #msm8916 问两个尖锐问题:
-   a. 当前主线 6.x 上还有能跑的 pronto WLAN (wcn36xx) 设备吗?
-      (tulip/piccolo wiki 标 working, 但本机零回包.)
-   b. WCN3620 vs WCN3660 如何区分?
-      - 供电压倒 3620 (vddxo=l7 1.8V, vddrfa=s3 1.3V, vddpa=l9 3.3V,
-        vdddig=l5 1.8V; stock DTB 花括号严格匹配确认, 非就近归属).
-      - 但 tulip (同 MSM8939!) 用的是 wcn3660. 若本机实为 3660,
-        RF 初始化全错 (l9 固定 3.3V 设不到 2.9-3.0, l5 1.8V 对 1.2V).
-      - 判定法: 拆机看 RF 芯丝印, 或试 wcn3660 看 probe 报什么.
-2. 黑名单测试结论: wcn36xx 拉黑后 PIL 根本不起 (无 crash, idle) —
-   说明 remoteproc 启动由 wcn36xx 触发, crash 需要 NV 交互.
-   (测试后 extlinux 已清 module_blacklist, /boot 已换回 nowcnss.)
+## 曾拟问社区 (本机实验已自答)
+- a. 主线 6.x 还有能跑的 pronto WLAN (wcn36xx) 设备吗? -> 本机即是 (修对 iris 后).
+- b. WCN3620 vs WCN3660/3680 怎么区分? -> 看 XO 时钟 (19.2 vs 48MHz) 与 5GHz 能力;
+  不能看供电: 三颗的供电映射 (l7/s3/l9/l5) 完全相同, 光看电压会误判.
+- 黑名单测试结论: wcn36xx 拉黑后 PIL 根本不启 (无 crash, idle) —
+  remoteproc 由 wcn36xx 触发, crash 需要 NV 交互 (测试后已还原).
 
 ## 当前状态
-- /boot 跑 nowcnss DTB (wcnss disabled), 系统健康, getty/ssh/`ip` 正常.
-- RF 版 DTB 留在 /boot (`msm8939-lenovo-phoenix.dtb.rf-tested`, 48529B).
-- 调试残留 (userdata, 重启不丢): /etc/systemd/system/wcnss-norecover.service (enabled),
-  /etc/modprobe.d/wcnss.conf? (实际文件名: wcn36xx.conf, debug_mask=12).
-- 远程复现: 切回 rf DTB (`cp *.rf-tested` 覆盖), reboot, `dmesg | grep HAL`.
-
-## 已解决 (2026-10-13): IRIS 实为 WCN3680 系
-- Lineage 下 5GHz 关联成功 (5180MHz/433Mbps) 证明双频 RF, 不可能是 WCN3620.
-- 固件自报: `WCN v2.0 RadioPhy vIris_TSMC_4.0 with 48MHz XO`.
-- 根因: DTS 写成 wcn3620 -> PMU 配成 19.2MHz XO, RF 从未起振:
-  WLAN 任务不启动, WLAN_CTRL 零回包, 60 秒狗叫. 与 NV/固件版本无关
-  (两版固件、两版 NV 行为一致的原因找到了).
-- 修复: `compatible = "qcom,wcn3680"` (供电恰好也是 3680 的值).
-- 验证: NV 通过, 无 crash, wlan0 出现, 扫描出网.
+- /boot 跑 wcn3680 DTB, 源码 DTS 也是 3680, WiFi 正常关联/扫描/ping.
+- 早期调试残留 (userdata, 重启不丢, 无害): /etc/systemd/system/wcnss-norecover.service,
+  /etc/modprobe.d/wcn36xx.conf (debug_mask=12) — 可留可删.
