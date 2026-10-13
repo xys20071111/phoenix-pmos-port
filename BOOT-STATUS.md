@@ -61,3 +61,9 @@
 - 不插线 poweroff 正常关机 ✓. reboot 不受影响 ✓.
 - 已知限制: 插着充电线关机/关机状态插线会自动开机 (lk2nd 无 off-mode-charge,
   与多数 pmOS 移植一致, 暂不修).
+
+## WiFi 点亮 (2026-10-13)
+- 决定性实验证据: Lineage 下 5GHz 关联成功 -> RF 双频 -> 非 WCN3620.
+- 根因: iris compatible 误写 wcn3620, PMU 给 RF 配 19.2MHz XO,
+  芯片要 48MHz (固件自报 vIris_TSMC_4.0 with 48MHz XO) -> RF 死寂.
+- 改 qcom,wcn3680 后 NV 通过/crash 消失/wlan0/扫描全通. 详见 WIFI.md.

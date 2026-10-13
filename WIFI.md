@@ -1,6 +1,17 @@
-# WiFi (WCNSS/pronto + wcn36xx) 调试记录 - PARKED
+# WiFi (WCNSS/pronto + wcn36xx) 调试记录 - 已解决 (2026-10-13)
 
-## 现象
+## 结论
+- RF 实为 **WCN3680** 系 (Lineage 下 5GHz 关联 5180MHz/433Mbps, 双频为证),
+  不是之前假设的 WCN3620.
+- 根因: DTS 写成 wcn3620 -> PMU 配成 19.2MHz XO, 而芯片要 48MHz ->
+  RF 从不起振, WLAN 任务不起, WLAN_CTRL 零回包, 60 秒狗叫.
+  固件自报 `WCN v2.0 RadioPhy vIris_TSMC_4.0 with 48MHz XO` 实锤.
+- 修复: `compatible = "qcom,wcn3680"` (供电恰好也是 3680 的值:
+  vddpa 3.3V, vdddig 1.8V). NV 通过, 无 crash, wlan0 出现, 扫描出网.
+- 教训: 供电映射 (l7/s3/l9/l5) 对 3620/3680 完全一样,
+  光看电压会误判, XO 时钟才是区分项. 5GHz 能力是铁证.
+
+## 现象 (已解决, 过程存档)
 - WCNSS PIL 正常启动, 版本查询 OK (WCNSS 1.5 / 1.2), mac 随机 (NV 无效).
 - `WCN36XX_HAL_DOWNLOAD_NV_REQ (55)` 发出去 (SMD 抓包确认 3088B 首片),
   芯片零回包 (`HAL <<<` 计数永远 0), 10s 超时 x2.
