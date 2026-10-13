@@ -1,4 +1,7 @@
 # Reference: <https://postmarketos.org/deviceinfo>
+# SUPERSEDED 2026-10: stock device-qcom-msm8916 is sufficient, no custom
+# device package needed (all phoenix specifics live in kernel DTS/driver).
+# Kept for history.
 # Draft for Lenovo PHAB Plus PB1-770N, based on device-qcom-msm8916 + kiwi
 # 未验证，先用通用包启动，调通后再拆分为独立 device-lenovo-phoenix
 
