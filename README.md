@@ -41,11 +41,11 @@ Copy `msm8939-lenovo-phoenix.dts`, `panel/panel-novatek-nt35532.c`,
 `panel/panel-novatek-nt35532.kconfig` and `power/qcom-pon.c` into
 `device/testing/linux-postmarketos-qcom-msm8916`, wire them up in
 `APKBUILD` `prepare()` (see git history), enable
-`CONFIG_DRM_PANEL_NOVATEK_NT35532`. Also drop `msm` from the
-`device-qcom-msm8916` package's `modules-initfs`: the Adreno firmware is only
-available once the root filesystem is mounted, so the GPU must probe
-post-pivot (display then comes up a few seconds late, behind the lk2nd
-splash). Build, install, then:
+`CONFIG_DRM_PANEL_NOVATEK_NT35532`. The Adreno firmware (`a420_pm4/pfp.fw`)
+must be in the initramfs, otherwise the early `msm` probe fails its firmware
+request: ship `30-gpu-firmware.files` (see db820c precedent) into
+`/usr/share/mkinitfs/files` via the `device-qcom-msm8916` package so mkinitfs
+picks it up. Build, install, then:
 
 ```
 ./split-image.sh <qcom-msm8916.img> ./images

@@ -61,12 +61,22 @@
   芯片要 48MHz (固件自报 vIris_TSMC_4.0 with 48MHz XO) -> RF 死寂.
 - 改 qcom,wcn3680 后 NV 通过/crash 消失/wlan0/扫描全通. 详见 WIFI.md.
 
+## GPU 花屏窗口修复 (2026-10-13, 待验证)
+- 回退 deferred 方案: 花屏窗口被拉长到 root 挂载后 (~5s+), 噪声太强还留残影.
+- 正解 (照抄 db820c): device 包发 `30-gpu-firmware.files`
+  (a420_pfp/pm4 共 14KB) 到 `/usr/share/mkinitfs/files`, mkinitfs 收录进 initramfs,
+  `msm` 回到 modules-initfs. 显示早起 + GPU 早期一次成功, 两全.
+- lk2nd 面板初始化 (用户提议) 不采用: lk2nd 树里根本没有 NT35532 面板驱动
+  (只有 nt35590/596/521), 移植整套 init 序列到 LK 工作量大, 且只能"遮"
+  (splash 盖住) 不能"治" (显示照样晚起). 先治本, 遮以后再说.
+
 ## GPU (Adreno 405) 3D 成功 (2026-10-13)
 - 显示 (MDP/fbcon) 本就不依赖 GPU, 一直正常.
 - 根因: a420_pm4/pfp 请求发生在 initramfs 阶段 (root 约 8s 才挂载),
   而 adreno 驱动是运行时 request_firmware (无 MODULE_FIRMWARE), mkinitfs 不收录固件
   -> initramfs 里必失败且无重试 (后来补 MODULE_FIRMWARE 声明, mkinitfs 仍不认).
 - 另缺 vdd/vddcx regulator (dummy 顶着), bind/unbind 热重载不支持 (-EBUSY).
-- 正解: initramfs 里去掉 msm (无 FDE, 显示晚几秒无所谓), GPU 改在根文件系统阶段加载.
+- 旧正解 (已回退, 见上节"花屏窗口修复"): 曾把 msm 踢出 initramfs 改根文件系统阶段加载,
+  GPU 能成但显示晚起、花屏窗口太长. 现改固件进 initramfs, msm 回早期.
 - 验证: kmscube -> freedreno FD405 / GLES 3.0 / 60fps vsync.
 - 遗留: 花屏窗口变长 (待解), INTF1 空接口下溢噪音 (0x04000000, lk2nd 残留, 无害).
