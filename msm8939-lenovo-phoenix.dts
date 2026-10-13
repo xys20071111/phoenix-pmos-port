@@ -309,7 +309,11 @@
 };
 
 &wcnss_iris {
-	compatible = "qcom,wcn3620";
+	/* NOTE: was qcom,wcn3620. Lineage proves dual-band (5GHz assoc
+	 * at 433Mbps = VHT), so this must be WCN3680. Rails match 3680
+	 * exactly (vddpa 3.3V, vdddig 1.8V). 3620 mode programs the WRONG
+	 * XO (19.2 instead of 48MHz) -> RF dead -> zero-RX + watchdog. */
+	compatible = "qcom,wcn3680";
 	/* RF rails from downstream (iris-vddxo=l7, vddrfa=s3, vddpa=l9, vdddig=l5).
 	 * Without these the driver takes dummy regulators, RF stays dark and
 	 * NV download times out -> WCNSS watchdog. */
