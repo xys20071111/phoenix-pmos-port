@@ -30,11 +30,29 @@
 	battery: battery {
 		compatible = "simple-battery";
 		device-chemistry = "lithium-ion-polymer";
-		/* downstream: v-cutoff 3.4V, float 4.35V, PHAB Plus 3400mAh */
+		/* downstream: v-cutoff 3.4V, float 4.35V (pb1770m batterydata,
+		 * scud-4v35 profile, fcc 3500mAh). */
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4350000>;
 		constant-charge-voltage-max-microvolt = <4350000>;
-		charge-full-design-microamp-hours = <3400000>;
+		charge-full-design-microamp-hours = <3500000>;
+		/* OCV->SoC: downstream pc-temp-ocv-lut 25C column
+		 * (batterydata-qrd-skuk-scud-4v35-3600mah.dtsi).
+		 * Without this, ocv2cap returns -EINVAL and capacity reads 0%
+		 * -> desktop power managers orderly-shutdown the machine. */
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 =
+			<4326000 100>, <4259000 95>, <4202000 90>,
+			<4149000 85>, <4097000 80>, <4059000 75>,
+			<3988000 70>, <3960000 65>, <3916000 60>,
+			<3870000 55>, <3840000 50>, <3818000 45>,
+			<3801000 40>, <3786000 35>, <3772000 30>,
+			<3756000 25>, <3738000 20>, <3718000 16>,
+			<3700000 13>, <3690000 11>, <3689000 10>,
+			<3688000 9>, <3686000 8>, <3682000 7>,
+			<3674000 6>, <3651000 5>, <3608000 4>,
+			<3552000 3>, <3478000 2>, <3366000 1>,
+			<3128000 0>;
 	};
 
 	chosen {

@@ -80,3 +80,12 @@
   GPU 能成但显示晚起、花屏窗口太长. 现改固件进 initramfs, msm 回早期.
 - 验证: kmscube -> freedreno FD405 / GLES 3.0 / 60fps vsync.
 - 遗留: 花屏窗口变长 (待解), INTF1 空接口下溢噪音 (0x04000000, lk2nd 残留, 无害).
+
+## 电池电量修复 (2026-10-13, 待验证)
+- 根因: pm8916-bms-vm 用 OCV 查表算容量, 我们的 battery 节点没有 OCV 表 ->
+  ocv2cap 返回 -EINVAL -> UPower 0% -> xfce 电源管理关机 (配着充电自动开机,
+  看着像重启; 那串 GPU IOMMU fault 只是伴随症状, handler 会 resume).
+- 表取自下游 pb1770m batterydata (scud-4v35 profile, 25C 列);
+  xwd profile 低电量段差最多 ~100mV, 若低电量不准再换. charge-full 按下游 fcc
+  纠正为 3500mAh. 验证: 刚下充电器应 ~100%, 用一会看电压-百分比曲线合理否.
+- 遗留: STATUS 恒 discharging (lbc charger 未接, 同 wt82918 现状), 仅显示问题.
