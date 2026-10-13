@@ -27,7 +27,18 @@
 - TX: `37 00 00 00 10 0c 00 00 ...` (type=55, ver=0, len=3088) + NV 表.
 - RX: 无.
 
-## 待试 (按优先级)
+## coredump 取证结论 (2026-10-13, devcoredump 6MB ELF)
+- 固件版本: `8936--CNSS-PR-2-0-1-c1-00096`.
+- dog 状态表 47 项中仅 `diag` 在册, WLAN/BT 应用任务**从未出现**.
+- 抓包佐证: WLAN_CTRL 通道零回包, 而 WCNSS_CTRL (版本查询+NV) 正常.
+- 固件内有 `WLANBAL_MTPInit Failed` / `MTP not initialised` 上报路径,
+  WLAN MTP 传输层很可能根本没起来 (但静态串中无法确认是哪一步).
+- 下载的 NV 片段在 dump 中**不存在** (固件侧从未收到/处理).
+- 推论: WLAN 应用任务从未启动 (或启动即死), 60 秒狗叫是“全员 idle”
+  的结果, 不是某个任务忙死. BT 同样无响应佐证 RF/任务级问题.
+- coredump 本体 6MB 留本地 (`wcnss-crash.elf`, 已 gitignore, 专有固件不进仓库).
+
+## 待办 (问社区时带上)
 1. 带数据去 #msm8916 问两个尖锐问题:
    a. 当前主线 6.x 上还有能跑的 pronto WLAN (wcn36xx) 设备吗?
       (tulip/piccolo wiki 标 working, 但本机零回包.)
