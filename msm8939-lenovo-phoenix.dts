@@ -46,6 +46,17 @@
 			reg = <0x0 0x84a00000 0x0 0x1600000>;
 			no-map;
 		};
+
+		/* downstream pstore region (0x9ff00000, 1M). Vital for
+		 * post-mortem: poweroff/power issues leave no serial. */
+		ramoops@9ff00000 {
+			compatible = "ramoops";
+			reg = <0x0 0x9ff00000 0x0 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x20000>;
+			ftrace-size = <0x00>;
+			pmsg-size = <0x20000>;
+		};
 	};
 
 	gpio-hall-sensor {
@@ -291,10 +302,10 @@
 };
 
 &wcnss {
-	/* BRINGUP disabled: WCNSS PIL crash-loops (watchdog starvation, zero
-	 * WLAN_CTRL response) and wedges rtnl. Re-enable with firmware fix.
-	 * See WIFI.md. */
-	status = "disabled";
+	/* Enabled for future WiFi work, but wcn36xx is blacklisted
+	 * (/etc/modprobe.d/wcn36xx.conf) so the PIL never boots and the
+	 * crash loop can't wedge rtnl. See WIFI.md. */
+	status = "okay";
 };
 
 &wcnss_iris {
