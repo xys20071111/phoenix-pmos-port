@@ -54,3 +54,10 @@
 - lk2nd 23.1-r1 (dtb-files patch) 刷入 boot, fdtdir 自动发现 phoenix DTB.
 - fbkeyboard UI 安装启动成功, 无需任何 TWRP 手工修改.
 - 完整链路: pmbootstrap install -> split-image.sh -> fastboot flash -> boot.
+
+## 关机修复验证 (2026-10-13)
+- 根因: PMIC PS_HOLD_RST_CTL 留着 WARM_RESET (bootloader), 主线只拉 PS_HOLD.
+- 修法: qcom-pon.c 加 POWER_OFF handler (power/qcom-pon.c), 先写 SHUTDOWN(0x04).
+- 不插线 poweroff 正常关机 ✓. reboot 不受影响 ✓.
+- 已知限制: 插着充电线关机/关机状态插线会自动开机 (lk2nd 无 off-mode-charge,
+  与多数 pmOS 移植一致, 暂不修).
