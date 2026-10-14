@@ -143,3 +143,14 @@
 - 验证: 插拔线 online/STATUS 跟着变, 桌面电池图标正常. lbc 已 disable.
 - 寄存器映射参考 Oculus Go 内核 smb358-charger.c (只借地址/位定义,
   驱动是重写的只读实现, 见 README 外部引用).
+
+## 耳机声道问题 (2026-10-14, 结论: 双声道混音, parked)
+- 现象: single-channel drive (-s1/-s2) 双耳同响; 静音/swap/mux 全套行为自洽地
+  指向 PDM 输出即混音 (两路 PDM 输出内容相同, mute 按路独立生效).
+- 排除链: INP2/3 全 ZERO, RX1/RX2 mute 独立有效, swap 无效, 换耳机无效,
+  关喇叭无效, LPASS I2SCTL=0x4400 (STEREO/SD0/16bit 正确), PipeWire 全停无效,
+  冷启 (拔线 30s) 无效.
+- Bisect: 去 tertiary (A) 无效, 退 r26 等效 (B) 无效, r25 原版 (C) 无效.
+  fork 与 torvalds 6.12 的 audio 驱动 diff 只有 MBHC-gpio, 数据通路无差别.
+- 教训: regmap 禁止暴力全读 (挂总线触发看门狗重启); 单点读 lpass 无害.
+- 现状: 输出按 dual-mono 用 (喇叭本来就是 mono). 真立体声待驱动深挖.
