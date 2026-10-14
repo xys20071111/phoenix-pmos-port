@@ -167,3 +167,10 @@
 - 教训: portrait 正误只看 Y, 横屏只看 X; X 才是要反的那个, Y/Z 碰不得.
 - 用 hwdb (ACCEL_MOUNT_MATRIX) 热切换试出 diag(-1,1,-1) (绕 Y 180 度),
   四个方向全对, 已落进 DTS. hwdb 只作测试 (重刷即丢, 以 DT 为准).
+
+## 视频硬解 (Venus, 2026-10-14, 起步)
+- 现状: DTS 无 venus 节点 (dtsi 只有预留内存), 驱动 CONFIG_VIDEO_QCOM_VENUS=m 现成.
+- 驱动要 qcom/venus-1.8/venus.mbn (PIL 签名, 必须原厂).
+- stock NON-HLOS 里 58 个文件, 有 MBA/MODEM/WCNSS, 无 venus.* (MODEM_PR 读不出).
+  本机无独立 firmware 分区. venus.mbn 下落不明: 查手机 modem 分区 / linux-firmware.
+- 下游确认 venus 基址 0x1d00000 (同 8916, 可直接抄 msm8916 模板节点).
