@@ -85,7 +85,9 @@ modifications until (if ever) they go upstream.
   (Cristian Cozzolino) from the vendor DT; init sequence + 1-byte DCS
   backlight are our additions (`panel/`, `panel-nt35532-skuk-initseq.c.inc`).
 - Downstream reference: LineageOS 16.0 kernel for pb1770m
-  (`android_kernel_lenovo_pb1770m-lineage-16.0`, local checkout, not in repo):
+  (local checkout `android_kernel_lenovo_pb1770m-lineage-16.0`, not in repo;
+  originally from
+  [sheikhshahnawaz41299/android_kernel_lenovo_pb1770m](https://github.com/sheikhshahnawaz41299/android_kernel_lenovo_pb1770m)):
   panel init sequence, sensor placement, WCN rails, OCV table (scud-4v35
   profile), SMB358 node/IRQ, audio + pinctrl facts. Excerpts under
   `downstream-pb1770m/`; decompiled stock DTB in `downstream-phoenix.dts`.
