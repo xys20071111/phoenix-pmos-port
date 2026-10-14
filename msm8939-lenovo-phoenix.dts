@@ -295,8 +295,13 @@
 		"AMIC1", "MIC BIAS External1",
 		"AMIC2", "MIC BIAS Internal2",
 		"AMIC3", "MIC BIAS External1";
-	pinctrl-0 = <&cdc_pdm_default &pri_mi2s_default>;
-	pinctrl-1 = <&cdc_pdm_sleep &pri_mi2s_sleep>;
+	/* NOTE: no MI2S pinctrl here. The internal codec path uses PDM
+	 * (cdc_pdm, gpio63-68); PRI_MI2S pins (gpio113-116) stay as GPIOs
+	 * because downstream puts the ltr559 IRQ on gpio115. Claiming
+	 * pri_mi2s here steals 115 and breaks the light sensor (and gains
+	 * nothing: there is no external MI2S codec on this board). */
+	pinctrl-0 = <&cdc_pdm_default>;
+	pinctrl-1 = <&cdc_pdm_sleep>;
 	pinctrl-names = "default", "sleep";
 	status = "okay";
 

@@ -103,3 +103,10 @@
 - 开 lpass + lpass_codec + pm8916_codec (supplies 全在 msm8939-pm8916.dtsi),
   sound 用 apq8016-sbc-sndcard + Primary MI2S, 无需重编驱动 (全是 =m).
 - 运行时还要配混音器 (multimedia->PRI_MI2S_RX 通路, 解 mute), speaker-test 验.
+
+## 音频 GPIO 冲突 (2026-10-14)
+- 声卡认了 (card0 phoenix, Primary MI2S), codec 正常, Headset Jack 输入建好.
+- 但 sound 的 pri_mi2s pinctrl 抢了 gpio115, ltr559 (IRQ 在 115) probe 失败.
+- 根因: 内部 codec 走 PDM (63-68), 板上无外部 MI2S 设备, 113-116 本就该是 GPIO
+  (下游 ltr559 IRQ 115 作证). 修法: sound pinctrl 只留 cdc_pdm.
+- MBHC 按键检测缺 vthreshold (仅报错,  parked, 耳机线控以后再说).
