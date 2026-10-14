@@ -8,3 +8,10 @@ panel/upstream-*
 .commandcode/
 stock-wcnss/
 *.elf
+*.mbn
+*.mdt
+*.b00
+*.b01
+*.b02
+*.b03
+*.b04
