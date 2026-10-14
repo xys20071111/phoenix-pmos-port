@@ -313,6 +313,37 @@
 	status = "disabled";
 };
 
+&venus_mem {
+	status = "okay";
+};
+
+&soc {
+	/* Venus video codec (same block/addr as 8916; downstream confirms
+	 * 0x1d00000 on 8939 too). Needs qcom/venus-1.8/venus.mbn (PIL-signed,
+	 * still hunting) + userspace v4l2m2m (GStreamer) to actually use it. */
+	video-codec@1d00000 {
+		compatible = "qcom,msm8916-venus";
+		reg = <0x01d00000 0xff000>;
+		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&gcc VENUS_GDSC>;
+		clocks = <&gcc GCC_VENUS0_VCODEC0_CLK>,
+			 <&gcc GCC_VENUS0_AHB_CLK>,
+			 <&gcc GCC_VENUS0_AXI_CLK>;
+		clock-names = "core", "iface", "bus";
+		iommus = <&apps_iommu 5>;
+		memory-region = <&venus_mem>;
+		status = "okay";
+
+		video-decoder {
+			compatible = "venus-decoder";
+		};
+
+		video-encoder {
+			compatible = "venus-encoder";
+		};
+	};
+};
+
 &pm8916_codec {
 	/* downstream qcom,msm-micbias1-ext-cap */
 	qcom,micbias1-ext-cap;
