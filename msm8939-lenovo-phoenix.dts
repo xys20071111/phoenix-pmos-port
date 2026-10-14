@@ -286,6 +286,10 @@
 &pm8916_codec {
 	/* downstream qcom,msm-micbias1-ext-cap */
 	qcom,micbias1-ext-cap;
+	/* micbias voltage for AMIC1/3 (handset/secondary mics on External1).
+	 * Missing -> register never programmed -> 0V bias -> mics silent
+	 * (AMIC2/headset on Internal2 still made noise, proving TX works). */
+	qcom,micbias-lvl = <2800>;
 	/* MBHC button thresholds borrowed from kiwi (same PM8916 codec,
 	 * downstream has no board-specific values; verify with real presses) */
 	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
