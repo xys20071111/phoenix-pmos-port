@@ -154,3 +154,10 @@
   fork 与 torvalds 6.12 的 audio 驱动 diff 只有 MBHC-gpio, 数据通路无差别.
 - 教训: regmap 禁止暴力全读 (挂总线触发看门狗重启); 单点读 lpass 无害.
 - 现状: 输出按 dual-mono 用 (喇叭本来就是 mono). 真立体声待驱动深挖.
+
+## 重力旋转修复 (2026-10-14, 待验证)
+- 横屏上下颠倒: 缺 mount-matrix, Y/Z 全反 (X 是对的).
+- 实测三姿势 (raw): 平放 (0,0,-1)g, 竖直 (0,-1,0)g, 顺时针横屏 (-1,0,0)g
+  => screen = diag(1,-1,-1) x sensor (det=+1, 绕 X 转 180 度, 合法旋转).
+- bmc150 驱动吃标准 mount-matrix. 另: raw 读数要先停 iio-sensor-proxy
+  (占着 buffer 会 EBUSY).
