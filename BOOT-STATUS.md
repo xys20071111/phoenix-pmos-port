@@ -122,3 +122,9 @@
 - RX 数字音量 0-124 = -84dB~+40dB, 0dB 在 84 (68%). 之前 80% (=99=+15dB)
   是数字 boost, 巨响; alsactl 存的 60% (=-10dB) 配桌面 -14dB 共 -24dB, 太轻.
 - 定级: 硬件锁 0dB (68%), 音量全交给桌面滑杆 (软件). UCM verb 同步改 68%.
+
+## 音频初始设置进镜像 (2026-10-14)
+- 每次刷机手设混音不可接受. 方案: device 包发 udev 规则
+  (90-msm8916-audio.rules) + 脚本 (usr/libexec/msm8916-audio-init.sh),
+  声卡出现即设 (41 秒晚 probe 也覆盖, init 无关, 刷机不丢).
+  要求 alsa-utils (已加进 device depends). 文件本体在 repo audio/ 目录.
