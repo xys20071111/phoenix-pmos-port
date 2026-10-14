@@ -286,6 +286,10 @@
 &pm8916_codec {
 	/* downstream qcom,msm-micbias1-ext-cap */
 	qcom,micbias1-ext-cap;
+	/* MBHC button thresholds borrowed from kiwi (same PM8916 codec,
+	 * downstream has no board-specific values; verify with real presses) */
+	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
+	qcom,mbhc-vthreshold-high = <75 150 237 450 500>;
 	status = "okay";
 };
 
@@ -312,6 +316,18 @@
 		};
 		codec {
 			sound-dai = <&lpass_codec 0>, <&pm8916_codec 0>;
+		};
+	};
+
+	/* Capture (mics): digital TX1 + analog TX1 behind tertiary MI2S.
+	 * Internal path only, no pins needed (same as playback). */
+	dai-link-tertiary {
+		link-name = "Tertiary MI2S";
+		cpu {
+			sound-dai = <&lpass MI2S_TERTIARY>;
+		};
+		codec {
+			sound-dai = <&lpass_codec 1>, <&pm8916_codec 1>;
 		};
 	};
 };
