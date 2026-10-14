@@ -15,6 +15,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/sound/apq8016-lpass.h>
 
 / {
 	model = "Lenovo PHAB Plus";
@@ -268,6 +269,46 @@
 &pm8916_bms {
 	monitored-battery = <&battery>;
 	status = "okay";
+};
+
+/* Audio: internal codec (SoC digital + PM8916 analog) via LPASS,
+ * machine driver qcom,apq8016-sbc-sndcard (nodes from msm8939-pm8916.dtsi).
+ * Downstream: qcom,msm8x16-audio-codec internal, micbias1-ext-cap, NO
+ * external speaker amp (pb1770m deletes cdc-ext-spk-pa). Template: kiwi. */
+&lpass {
+	status = "okay";
+};
+
+&lpass_codec {
+	status = "okay";
+};
+
+&pm8916_codec {
+	/* downstream qcom,msm-micbias1-ext-cap */
+	qcom,micbias1-ext-cap;
+	status = "okay";
+};
+
+&sound {
+	model = "phoenix";
+	audio-routing =
+		"AMIC1", "MIC BIAS External1",
+		"AMIC2", "MIC BIAS Internal2",
+		"AMIC3", "MIC BIAS External1";
+	pinctrl-0 = <&cdc_pdm_default &pri_mi2s_default>;
+	pinctrl-1 = <&cdc_pdm_sleep &pri_mi2s_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	dai-link-primary {
+		link-name = "Primary MI2S";
+		cpu {
+			sound-dai = <&lpass MI2S_PRIMARY>;
+		};
+		codec {
+			sound-dai = <&lpass_codec 0>, <&pm8916_codec 0>;
+		};
+	};
 };
 
 &pm8916_resin {

@@ -96,3 +96,10 @@
   超过 25mV guard 被丢弃, fake_ocv 全程 stranded 高位, 越用越虚 (会死在显示 25%).
 - 修法: power/pm8916-bms-vm-fake-ocv-snap.patch, 放电且 gap>100mV 时 snap 到 vbat.
   负载瞬时下垂误触发也无妨 (snap-up 会自己纠回来). 已 dry-run 验证可打上.
+
+## 音频初版 (2026-10-14, 待验证)
+- 本机之前零音频节点. 下游: 内部 codec (msm8x16, micbias1-ext-cap),
+  无外部功放 (pb1770m 删了 cdc-ext-spk-pa). 模板: kiwi.
+- 开 lpass + lpass_codec + pm8916_codec (supplies 全在 msm8939-pm8916.dtsi),
+  sound 用 apq8016-sbc-sndcard + Primary MI2S, 无需重编驱动 (全是 =m).
+- 运行时还要配混音器 (multimedia->PRI_MI2S_RX 通路, 解 mute), speaker-test 验.
