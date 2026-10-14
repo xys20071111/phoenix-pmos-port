@@ -268,6 +268,9 @@
 
 &pm8916_bms {
 	monitored-battery = <&battery>;
+	/* lbc only monitors VBUS (SMB358 does the charging); this gives
+	 * STATUS charging/discharging via am_i_supplied. */
+	power-supplies = <&pm8916_charger>;
 	status = "okay";
 };
 
@@ -285,10 +288,11 @@
 
 &pm8916_charger {
 	monitored-battery = <&battery>;
-	/* Detection cycle: is the PMIC linear path real, or is charging done
-	 * by the external SMB358 (downstream pm8916_chg use-external-charger)?
-	 * SAFE FLOOR values: if the driver binds, it can only ever push 90mA.
-	 * No power-supplies wiring yet (observe dmesg first). */
+	/* Confirmed external charger (SMB358, driver prints -ENODEV but keeps
+	 * going and still reports USBIN_VALID). Monitor-only: 90mA floor so
+	 * even if CHG_EN did anything it is harmless next to the SMB358.
+	 * Full SMB358 control (Oculus smb358-charger.c exists as reference)
+	 * parked until needed; charging itself already reaches 100%. */
 	qcom,fast-charge-safe-voltage = <4350000>;
 	qcom,fast-charge-safe-current = <90000>;
 	status = "okay";
