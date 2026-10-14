@@ -128,3 +128,9 @@
   (90-msm8916-audio.rules) + 脚本 (usr/libexec/msm8916-audio-init.sh),
   声卡出现即设 (41 秒晚 probe 也覆盖, init 无关, 刷机不丢).
   要求 alsa-utils (已加进 device depends). 文件本体在 repo audio/ 目录.
+
+## UCM 进包 (2026-10-14)
+- UCM 手拷 /usr/share, 重刷 rootfs 必丢 -> Dummy 重现. 修法: 同 device 包发货
+  (usr/share/alsa/ucm2/phoenix/), pkgrel=5, 和音频脚本同包.
+- device-qcom-msm8916 本地增量至今: panel-nt35532 入 initfs, msm 回归,
+  a420 固件进 initramfs, 音频 udev+脚本+UCM, alsa-utils 依赖.
