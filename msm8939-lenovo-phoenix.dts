@@ -266,11 +266,25 @@
 	status = "okay";
 };
 
+&blsp_i2c4 {
+	/* SMB358 charger (0x6A). Downstream i2c_4 = gpio14/15 = this bus.
+	 * Was invisible until now (bus never enabled): i2cdetect showed only
+	 * buses 0 (sensors) and 1 (touch). */
+	status = "okay";
+
+	smb358: charger@6a {
+		compatible = "summit,smb358";
+		reg = <0x6a>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <62 IRQ_TYPE_EDGE_BOTH>;
+		monitored-battery = <&battery>;
+	};
+};
+
 &pm8916_bms {
 	monitored-battery = <&battery>;
-	/* lbc only monitors VBUS (SMB358 does the charging); this gives
-	 * STATUS charging/discharging via am_i_supplied. */
-	power-supplies = <&pm8916_charger>;
+	/* SMB358 (external charger) reports VBUS; lbc block is dead here. */
+	power-supplies = <&smb358>;
 	status = "okay";
 };
 
@@ -287,15 +301,9 @@
 };
 
 &pm8916_charger {
-	monitored-battery = <&battery>;
-	/* Confirmed external charger (SMB358, driver prints -ENODEV but keeps
-	 * going and still reports USBIN_VALID). Monitor-only: 90mA floor so
-	 * even if CHG_EN did anything it is harmless next to the SMB358.
-	 * Full SMB358 control (Oculus smb358-charger.c exists as reference)
-	 * parked until needed; charging itself already reaches 100%. */
-	qcom,fast-charge-safe-voltage = <4350000>;
-	qcom,fast-charge-safe-current = <90000>;
-	status = "okay";
+	/* Dead on this board (external SMB358 owns USB; 0x1310 frozen).
+	 * Disabled to keep dmesg clean; indication comes from smb358. */
+	status = "disabled";
 };
 
 &pm8916_codec {

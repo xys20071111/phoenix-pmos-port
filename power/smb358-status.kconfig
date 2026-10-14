@@ -1,0 +1,8 @@
+config SMB358_STATUS
+	tristate "Summit SMB358 charger status monitor (read-only)"
+	depends on I2C && POWER_SUPPLY
+	help
+	  Read-only status monitor for the Summit SMB358 charger found on
+	  boards (e.g. Lenovo PHAB Plus) where it does all charging and the
+	  PMIC charger block is unused. Exposes ONLINE/STATUS from the SMB358
+	  status registers; never writes charger configuration.

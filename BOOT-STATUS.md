@@ -134,3 +134,9 @@
   (usr/share/alsa/ucm2/phoenix/), pkgrel=5, 和音频脚本同包.
 - device-qcom-msm8916 本地增量至今: panel-nt35532 入 initfs, msm 回归,
   a420 固件进 initramfs, 音频 udev+脚本+UCM, alsa-utils 依赖.
+
+## 充电指示: SMB358 只读驱动 (2026-10-14, 待验证)
+- PMIC lbc 判死刑: 0x1310 恒 0x04 不跟线走, USB 块没电/没接.
+- SMB358 在 blsp_i2c4 (下游 i2c_4=gpio14/15, 之前总线都没开所以扫不到).
+- 新驱动 power/smb358-status.c: 只读 STATUS_C/IRQ_F 报 ONLINE/STATUS,
+  绝不写配置 (充电靠 bootloader/OTP 本来就能到 100%). IRQ 用 gpio62.
