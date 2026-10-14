@@ -6,13 +6,17 @@ Mainline Linux port of postmarketOS for the Lenovo PHAB Plus
 
 ## Status (fbkeyboard UI boots, 2026-10)
 
-Working: display (Novatek NT35532 mainline driver, ported init sequence),
-backlight/brightness, touchscreen (Goodix GT9xx), volume keys, hall sensor,
-vibrator, eMMC, SD slot, USB networking + SSH, battery voltage, accelerometer,
-WiFi (WCN3680, dual-band), GPU 3D (Adreno 405 / freedreno FD405), poweroff/reboot.
+Working: display (NT35532 driver, ported init sequence), backlight/brightness,
+touchscreen (Goodix GT9xx), volume keys, hall sensor, vibrator, eMMC, SD slot,
+USB networking + SSH, battery voltage + percentage (OCV table) + charging
+indication (SMB358), accelerometer, WiFi (WCN3680, dual-band),
+GPU 3D (Adreno 405 / freedreno FD405), audio output (speaker mono + headphones,
+desktop via UCM), poweroff/reboot.
 
 Parked: USB OTG (see `otg/OTG.md`), light sensor (probes, reads zero),
-modem calls, GPS, camera, magnetometer (no mainline driver).
+microphone (capture link present, function unverified), headset buttons
+(thresholds in, unverified), modem calls, GPS, camera,
+magnetometer (no mainline driver).
 
 ## Contents
 
@@ -22,6 +26,14 @@ modem calls, GPS, camera, magnetometer (no mainline driver).
 - `panel/panel-novatek-nt35532.kconfig` — Kconfig snippet.
 - `power/qcom-pon.c` — upstream qcom-pon + poweroff handler
   (programs PON shutdown type; stock mainline poweroff reboots this board).
+- `power/smb358-status.c` + `power/smb358-status.kconfig` — read-only
+  Summit SMB358 charger monitor (ONLINE/STATUS; never writes config).
+  Register map from the Oculus Go reference (see below).
+- `power/pm8916-bms-vm-fake-ocv-snap.patch` — snap fake_ocv down on fast
+  discharge (else SoC strands high after unplug).
+- `audio/msm8916-audio-init.sh` + `audio/90-msm8916-audio.rules` — udev
+  applies the proven mixer set when the sound card appears.
+- `ucm2/phoenix/` — PipeWire/UCM profile (Speaker + Headphones + Mic).
 - `0002-dts-msm8916-phoenix-dtb-files.patch` — lk2nd patch so `fdtdir`
   auto-discovers the phoenix DTB (no extlinux hand-edits needed).
 - `panel-nt35532-skuk-initseq.c.inc` — init sequence extracted from downstream.
@@ -56,6 +68,40 @@ fastboot flash -S 200M userdata ./images/root-part.img
 
 Backups of boot/recovery/modem/persist are your own responsibility —
 see `BACKUP.md` (serials redacted, use `$SERIAL`).
+
+## External references
+
+Upstream and third-party code this port builds on or borrows from.
+Nothing below is vendored except where noted; pmaports edits live as local
+modifications until (if ever) they go upstream.
+
+- Kernel base: [msm8916-mainline/linux](https://github.com/msm8916-mainline/linux)
+  (`v6.12.1-msm8916`), packaged via pmaports
+  `device/testing/linux-postmarketos-qcom-msm8916`.
+- Bootloader: [msm8916-mainline/lk2nd](https://github.com/msm8916-mainline/lk2nd);
+  our `0002-dts-msm8916-phoenix-dtb-files.patch` only enables the phoenix DTB.
+- Panel driver: generated with
+  [linux-mdss-dsi-panel-driver-generator](https://github.com/msm8916-mainline/linux-mdss-dsi-panel-driver-generator)
+  (Cristian Cozzolino) from the vendor DT; init sequence + 1-byte DCS
+  backlight are our additions (`panel/`, `panel-nt35532-skuk-initseq.c.inc`).
+- Downstream reference: LineageOS 16.0 kernel for pb1770m
+  (`android_kernel_lenovo_pb1770m-lineage-16.0`, local checkout, not in repo):
+  panel init sequence, sensor placement, WCN rails, OCV table (scud-4v35
+  profile), SMB358 node/IRQ, audio + pinctrl facts. Excerpts under
+  `downstream-pb1770m/`; decompiled stock DTB in `downstream-phoenix.dts`.
+- SMB358 register map: `smb358-charger.c` from the
+  [Oculus Go kernel](https://github.com/facebookincubator/oculus-linux-kernel)
+  (reference only — our driver is a fresh read-only implementation).
+- Device package base: pmaports `device/testing/device-qcom-msm8916`
+  (Nikita Travkin). Local additions: NT35532 in initramfs, `msm` restored,
+  a420 firmware file list (pattern copied from archived `device-arrow-db820c`
+  `30-gpu-firmware.files`), audio udev/script/UCM, `alsa-utils` dep.
+- Audio template: in-tree `msm8939-huawei-kiwi.dts` (dai-links, mic routing,
+  MBHC thresholds); machine driver `apq8016-sbc-sndcard` used as-is.
+- Firmware blobs: `linux-firmware` (a420 GPU, via distro packages) and the
+  stock QPST package (modem/WCNSS, local only, never committed).
+- WiFi NV fallback: `firmware-qcom-db410c-wcnss-nv` symlink (stock pmaports
+  hack, still in the device package).
 
 ## License
 
