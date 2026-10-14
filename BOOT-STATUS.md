@@ -174,3 +174,16 @@
 - stock NON-HLOS 里 58 个文件, 有 MBA/MODEM/WCNSS, 无 venus.* (MODEM_PR 读不出).
   本机无独立 firmware 分区. venus.mbn 下落不明: 查手机 modem 分区 / linux-firmware.
 - 下游确认 venus 基址 0x1d00000 (同 8916, 可直接抄 msm8916 模板节点).
+
+## Venus 视频硬解 (2026-10-14, 结论: firmware 起, 会话楔死, parked)
+- 节点/固件/驱动就绪: video0(D)/video1(E), venus.mbn 全套原厂, IRQ 55 次, IOMMU 已挂.
+- 固件活着: 报版本号 VIDEO.VE.1.8-00138, HFI 能收 buffer 注册 (BufferChk 日志).
+- 死法: 会话一起就楔. REQBUFS 超时 / G_FMT 空转 (无 resolution 事件) /
+  `H264d output_manager pool is NULL` / 随后一切 HFI 超时, IRQ 数冻结 55 不涨.
+- 排除: IOVA 冲突论 (dma-iommu 自顶向下约 3.5GB, 固件区 0-5MB 碰不上;
+  且 buffer 注册本身是通的); 时钟 (clk_ignore_unused 无影响已 revert);
+  权限; 尺寸 (1920x1080 同样死).
+- 嫌疑 (未证实): TZ 页表看不见高位 buffer; 或 video core0/1 的 GDSC/时钟
+  主线管不到 (下游有 5 时钟+3 GDSC, 主线只有 3+1); 或固件在 LoadResources 空池
+  直接崩. db410c 同款驱动/DT 未见有人验证过解码.
+- 现状: ffplay 软解 33% 照播 (8 核 A53 够 1080p25), 先走软解; Totem 卡另查渲染.
