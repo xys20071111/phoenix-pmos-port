@@ -137,11 +137,13 @@
 		vddio-supply = <&pm8916_l6>;
 
 		/* Orientation (measured live, 2026-10-14, raw LSB @0.306458):
-		 * flat/up:(0,0,-1)g, portrait: (0,-1,0)g, landscape-CW: (-1,0,0)g
-		 * => screen = diag(1,-1,-1) x sensor (180 deg about X).
-		 * Without it landscape comes out upside-down. */
-		mount-matrix = "1", "0", "0",
-			       "0", "-1", "0",
+		 * flat/up:(0,0,-1)g, portrait: (0,-1,0)g, landscape-CW: (-1,0,0)g.
+		 * Final matrix diag(-1,1,-1) (180 deg about Y) found by hwdb
+		 * iteration: identity got portrait right but landscape flipped;
+		 * diag(1,-1,-1) flipped everything; only X needed negation
+		 * (Y/Z signs: portrait/flat anchoring). det=+1. */
+		mount-matrix = "-1", "0", "0",
+			       "0", "1", "0",
 			       "0", "0", "-1";
 
 		pinctrl-0 = <&accel_int_default>;
