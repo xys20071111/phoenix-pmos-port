@@ -110,3 +110,10 @@
 - 根因: 内部 codec 走 PDM (63-68), 板上无外部 MI2S 设备, 113-116 本就该是 GPIO
   (下游 ltr559 IRQ 115 作证). 修法: sound pinctrl 只留 cdc_pdm.
 - MBHC 按键检测缺 vthreshold (仅报错,  parked, 耳机线控以后再说).
+
+## 音频输出打通 (2026-10-14)
+- 声卡一次点亮 (card0 phoenix, Primary MI2S, codec 全认, MBHC 按键缺表 parked).
+- 三个坑: (1) 老 LPASS 无路由 mixer, DMA 硬连, 无需设; (2) HPHL/HPHR 是枚举
+  ZERO/Switch, 不是布尔 on; (3) 喇叭挂 RX3, 立体声下 RX3 无数据 -> RX3 MIX1 INP1
+  拨到 RX1 当 mono 用. 另: sound 曾抢 gpio115, pinctrl 去掉 pri_mi2s (内部走 PDM).
+- 遗留: PipeWire 显示 Dummy (缺 UCM), 麦克风 (无 capture link), 耳机插拔自动切换.
