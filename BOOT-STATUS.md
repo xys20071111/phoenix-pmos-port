@@ -205,3 +205,12 @@
   (给 qcom_iommu 补 get_resv_regions, 调通用 of_iommu_get_resv_regions).
 - 依据: dma-iommu base_pfn=1 (从 0x1000 往上分, 必撞固件); qcom_iommu 之前
   根本没实现 get_resv_regions, DT 写了也白写.
+
+## Venus 双核供电 (2026-10-15, 待验证)
+- 根因实锤: 解码时 venus_core0/core1 电源域 off、core 时钟关 (genpd/clk  sampling 确认),
+  LoadResources 上不了 Core0 -> NULL pool -> -110 一条链全对上.
+- 修法 (对齐主线 v10 形状): gcc 给两 core GDSC 加 HW_CTRL (固件自管上下电),
+  res 加 vcodec0_clks + vcodec_pmdomains (6.12 驱动本就支持, 876 行无条件 attach),
+  DTS 补 5 时钟 + 3 电源域 + 名字. IOVA 预留保留 (独立问题, 缓冲仍须躲固件区).
+- 验过为实的: GDSC/时钟/res 字段在 6.12 全存在; pas_mem_setup 在 6.12 不存在
+  (上一轮分析里虚构的, 作废); CB 隔离说无法证伪但不再关键.

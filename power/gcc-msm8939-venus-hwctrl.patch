@@ -1,0 +1,18 @@
+--- a/drivers/clk/qcom/gcc-msm8939.c	2026-10-15 09:14:30.199310935 +0800
++++ b/drivers/clk/qcom/gcc-msm8939.c	2026-10-15 09:14:30.228201241 +0800
+@@ -3754,6 +3754,7 @@
+ 		.name = "venus_core0",
+ 	},
+ 	.pwrsts = PWRSTS_OFF_ON,
++	.flags = HW_CTRL,
+ };
+ 
+ static struct gdsc venus_core1_gdsc = {
+@@ -3762,6 +3763,7 @@
+ 		.name = "venus_core1",
+ 	},
+ 	.pwrsts = PWRSTS_OFF_ON,
++	.flags = HW_CTRL,
+ };
+ 
+ static struct clk_regmap *gcc_msm8939_clocks[] = {
