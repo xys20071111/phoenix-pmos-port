@@ -322,7 +322,7 @@
 	 * 0x1d00000 on 8939 too). Needs qcom/venus-1.8/venus.mbn (PIL-signed,
 	 * still hunting) + userspace v4l2m2m (GStreamer) to actually use it. */
 	video-codec@1d00000 {
-		compatible = "qcom,msm8916-venus";
+		compatible = "qcom,msm8939-venus";
 		reg = <0x01d00000 0xff000>;
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&gcc VENUS_GDSC>;

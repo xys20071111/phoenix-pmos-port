@@ -1,0 +1,41 @@
+--- a/drivers/media/platform/qcom/venus/core.c	2026-10-15 08:04:19.222259979 +0800
++++ b/drivers/media/platform/qcom/venus/core.c	2026-10-15 08:04:19.234321844 +0800
+@@ -559,6 +559,30 @@
+ 	.fwname = "qcom/venus-1.8/venus.mbn",
+ };
+ 
++static const struct venus_resources msm8939_res = {
++	.freq_tbl = msm8916_freq_table,
++	.freq_tbl_size = ARRAY_SIZE(msm8916_freq_table),
++	.reg_tbl = msm8916_reg_preset,
++	.reg_tbl_size = ARRAY_SIZE(msm8916_reg_preset),
++	.clks = { "core", "iface", "bus", },
++	.clks_num = 3,
++	.max_load = 352800, /* 720p@30 + 1080p@30 */
++	.hfi_version = HFI_VERSION_1XX,
++	.vmem_id = VIDC_RESOURCE_NONE,
++	.vmem_size = 0,
++	.vmem_addr = 0,
++	.dma_mask = 0xddc00000 - 1,
++	/* Content-protection ranges from this board's downstream venus_ns /
++	 * venus_sec_non_pixel pools. Without them TZ keeps defaults and the
++	 * firmware's IsBufferProtected check rejects every buffer, so decode
++	 * never produces frames (output pool NULL, then PC_PREP timeout). */
++	.cp_start = 0,
++	.cp_size = 0x5dc00000,
++	.cp_nonpixel_start = 0x1000000,
++	.cp_nonpixel_size = 0x24800000,
++	.fwname = "qcom/venus-1.8/venus.mbn",
++};
++
+ static const struct freq_tbl msm8996_freq_table[] = {
+ 	{ 1944000, 520000000 },	/* 4k UHD @ 60 (decode only) */
+ 	{  972000, 520000000 },	/* 4k UHD @ 30 */
+@@ -935,6 +959,7 @@
+ 
+ static const struct of_device_id venus_dt_match[] = {
+ 	{ .compatible = "qcom,msm8916-venus", .data = &msm8916_res, },
++	{ .compatible = "qcom,msm8939-venus", .data = &msm8939_res, },
+ 	{ .compatible = "qcom,msm8996-venus", .data = &msm8996_res, },
+ 	{ .compatible = "qcom,msm8998-venus", .data = &msm8998_res, },
+ 	{ .compatible = "qcom,sdm660-venus", .data = &sdm660_res, },

@@ -187,3 +187,12 @@
   主线管不到 (下游有 5 时钟+3 GDSC, 主线只有 3+1); 或固件在 LoadResources 空池
   直接崩. db410c 同款驱动/DT 未见有人验证过解码.
 - 现状: ffplay 软解 33% 照播 (8 核 A53 够 1080p25), 先走软解; Totem 卡另查渲染.
+
+## Venus CP 范围修复 (2026-10-15, 待验证)
+- 别人指的路, 代码验过是实的: msm8916_res 无 cp_* -> TZ 保持默认,
+  固件 IsBufferProtected 全拒 -> output pool NULL -> PC 超时.
+- firmware.c:245 用 TZ 且 cp_size 非零才调 mem_protect_video_var.
+- 值取自本机下游 DTB (venus_ns 池首 0x5dc00000, sec_non_pixel 池
+  0x1000000/0x24800000), 不是抄 sdm660 的.
+- 修法: power/venus-msm8939-res.patch 加 msm8939_res + compatible,
+  DTS 切 qcom,msm8939-venus. (教训: patch 手搓行号必错, 改完 diff -u 生成.)
