@@ -214,3 +214,9 @@
   DTS 补 5 时钟 + 3 电源域 + 名字. IOVA 预留保留 (独立问题, 缓冲仍须躲固件区).
 - 验过为实的: GDSC/时钟/res 字段在 6.12 全存在; pas_mem_setup 在 6.12 不存在
   (上一轮分析里虚构的, 作废); CB 隔离说无法证伪但不再关键.
+
+## HW_CTRL 回滚 (2026-10-15)
+- 加 HW_CTRL 后 probe 直接挂: 主 vcodec 时钟 status stuck off -> -EBUSY,
+  连 /dev/video 都没了 (比原来更糟). 机理未深究 (疑 HW trigger 与主时钟
+  时序互锁), 先回退 pristine gcc, 保留 DT 三域 + res pmdomains (SW 控制).
+- 若 SW 上电后解码仍楔, 再考虑固件自管时钟的可能性.
