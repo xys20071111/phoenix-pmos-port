@@ -220,3 +220,10 @@
   连 /dev/video 都没了 (比原来更糟). 机理未深究 (疑 HW trigger 与主时钟
   时序互锁), 先回退 pristine gcc, 保留 DT 三域 + res pmdomains (SW 控制).
 - 若 SW 上电后解码仍楔, 再考虑固件自管时钟的可能性.
+
+## Venus vcodec 时钟 (2026-10-15, 待验证)
+- 上游 RFC (Erikas/André, lwn 1068059) 实锤方向: 8939 双核要上电, 且 v3/v4 的
+  vdec/venc 功耗方法要搬到 v1 (1xx 原生没有 session 功耗钩子!).
+- 但它是 RFC (朋友说的 v10 已合入不实), 全套搬运太大. 本地最小等价:
+  power/venus-v1-vcodec-clks.patch, 在 core_power_v1 里顺手开关 vcodec0_clks
+  (res 没列则 no-op, 其他 1xx 设备行为不变). HW_CTRL 保持 revert (它单上挂 probe).

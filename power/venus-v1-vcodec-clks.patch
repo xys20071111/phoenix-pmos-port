@@ -1,0 +1,35 @@
+--- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 09:35:05.275716872 +0800
++++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 09:35:05.287932700 +0800
+@@ -314,10 +314,30 @@
+ {
+ 	int ret = 0;
+ 
+-	if (on == POWER_ON)
++	if (on == POWER_ON) {
+ 		ret = core_clks_enable(core);
+-	else
++		if (ret)
++			return ret;
++		/*
++		 * 8939 has extra video cores with their own clocks.
++		 * pm_ops_v1 has no session power hooks (those only exist in
++		 * v3/v4), so enable them here, otherwise the firmware wedges
++		 * at LoadResources. No-op when res lists no vcodec clocks
++		 * (all other 1xx devices behave exactly as before).
++		 */
++		if (core->res->vcodec_clks_num) {
++			ret = vcodec_clks_get(core, core->dev,
++					      core->vcodec0_clks,
++					      core->res->vcodec0_clks);
++			if (!ret)
++				ret = vcodec_clks_enable(core,
++							 core->vcodec0_clks);
++		}
++	} else {
++		if (core->res->vcodec_clks_num)
++			vcodec_clks_disable(core, core->vcodec0_clks);
+ 		core_clks_disable(core);
++	}
+ 
+ 	return ret;
+ }
