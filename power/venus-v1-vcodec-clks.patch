@@ -1,9 +1,26 @@
---- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 10:53:30.335236093 +0800
-+++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 10:53:30.359255281 +0800
-@@ -310,15 +310,115 @@
- {
+--- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 17:40:37.592832009 +0800
++++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 17:40:37.610502969 +0800
+@@ -291,10 +291,93 @@
+ 	return ret;
  }
  
++static int vcodec_domains_get_v1(struct venus_core *core)
++{
++	struct device *dev = core->dev;
++	const struct venus_resources *res = core->res;
++	const struct dev_pm_domain_attach_data vcodec_data = {
++		.pd_names = res->vcodec_pmdomains,
++		.num_pd_names = res->vcodec_pmdomains_num,
++		.pd_flags = PD_FLAG_NO_DEV_LINK,
++	};
++
++	if (!res->vcodec_pmdomains)
++		return 0;
++
++	return devm_pm_domain_attach_list(dev, &vcodec_data,
++					&core->pmdomains);
++}
++
 +static int vcodec_domains_enable(struct venus_core *core)
 +{
 +	const struct venus_resources *res = core->res;
@@ -66,7 +83,36 @@
 +	return ret;
 +}
 +
- static int core_power_v1(struct venus_core *core, int on)
+ static int core_get_v1(struct venus_core *core)
+ {
+ 	int ret;
+ 
++	ret = vcodec_domains_get_v1(core);
++	if (ret < 0)
++		return ret;
++
+ 	ret = core_clks_get(core);
+ 	if (ret)
+ 		return ret;
+@@ -303,7 +386,16 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	return 0;
++	if (!core->res->vcodec_pmdomains)
++		return 0;
++
++	ret = vcodec_clks_get(core, core->dev, core->vcodec0_clks,
++			      core->res->vcodec0_clks);
++	if (ret)
++		return ret;
++
++	return vcodec_clks_get(core, core->dev, core->vcodec1_clks,
++			       core->res->vcodec1_clks);
+ }
+ 
+ static void core_put_v1(struct venus_core *core)
+@@ -314,11 +406,43 @@
  {
  	int ret = 0;
  
@@ -83,12 +129,6 @@
 +
 +		if (!core->res->vcodec_pmdomains)
 +			return 0;
-+
-+		ret = vcodec_clks_get(core, core->dev,
-+				      core->vcodec0_clks,
-+				      core->res->vcodec0_clks);
-+		if (ret)
-+			goto fail_core_clks;
 +
 +		ret = vcodec_clks_enable(core, core->vcodec0_clks);
 +		if (ret)

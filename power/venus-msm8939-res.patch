@@ -1,12 +1,16 @@
---- a/drivers/media/platform/qcom/venus/core.c	2026-10-15 09:14:46.016055522 +0800
-+++ b/drivers/media/platform/qcom/venus/core.c	2026-10-15 09:14:46.031079084 +0800
-@@ -559,6 +559,38 @@
+--- a/drivers/media/platform/qcom/venus/core.c	2026-10-15 17:41:16.802375672 +0800
++++ b/drivers/media/platform/qcom/venus/core.c	2026-10-15 17:41:16.814423567 +0800
+@@ -559,6 +559,43 @@
  	.fwname = "qcom/venus-1.8/venus.mbn",
  };
  
 +static const struct freq_tbl msm8939_freq_table[] = {
-+	{ 244800, 100000000 },	/* 1920x1088 @ 30 fps */
-+	{ 489600, 200000000 },	/* 1920x1088 @ 60 fps */
++	{ 489600, 266670000 },	/* 1080p @ 60 */
++	{ 244800, 133330000 },	/* 1080p @ 30 */
++	{ 220800, 133330000 },	/* 720p @ 60 */
++	{ 108000, 133330000 },	/* 720p @ 30 */
++	{ 72000, 133330000 },	/* VGA @ 60 */
++	{ 36000, 133330000 },	/* VGA @ 30 */
 +};
 +
 +static const struct reg_val msm8939_reg_preset[] = {
@@ -23,6 +27,7 @@
 +	.clks = { "core", "iface", "bus" },
 +	.clks_num = 3,
 +	.vcodec0_clks = { "vcodec0_core", "vcodec1_core" },
++	.vcodec1_clks = { "vcodec0_core", "vcodec1_core" },
 +	.vcodec_clks_num = 2,
 +	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0", "vcodec1" },
 +	.vcodec_pmdomains_num = 3,
@@ -39,7 +44,7 @@
  static const struct freq_tbl msm8996_freq_table[] = {
  	{ 1944000, 520000000 },	/* 4k UHD @ 60 (decode only) */
  	{  972000, 520000000 },	/* 4k UHD @ 30 */
-@@ -935,6 +967,7 @@
+@@ -935,6 +972,7 @@
  
  static const struct of_device_id venus_dt_match[] = {
  	{ .compatible = "qcom,msm8916-venus", .data = &msm8916_res, },
