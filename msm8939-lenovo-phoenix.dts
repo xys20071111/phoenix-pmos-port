@@ -336,20 +336,14 @@
 	 * Buffers must stay clear of the FW image at IOVA 0x0-0x500000
 	 * (see venus_fw_iova). */
 	venus_video: video-codec@1d00000 {
-		compatible = "qcom,msm8939-venus";
+		compatible = "qcom,msm8916-venus";
 		reg = <0x01d00000 0xff000>;
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
-		power-domains = <&gcc VENUS_GDSC>,
-				<&gcc VENUS_CORE0_GDSC>,
-				<&gcc VENUS_CORE1_GDSC>;
-		power-domain-names = "venus", "vcodec0", "vcodec1";
+		power-domains = <&gcc VENUS_GDSC>;
 		clocks = <&gcc GCC_VENUS0_VCODEC0_CLK>,
 			 <&gcc GCC_VENUS0_AHB_CLK>,
-			 <&gcc GCC_VENUS0_AXI_CLK>,
-			 <&gcc GCC_VENUS0_CORE0_VCODEC0_CLK>,
-			 <&gcc GCC_VENUS0_CORE1_VCODEC0_CLK>;
-		clock-names = "core", "iface", "bus",
-			      "vcodec0_core", "vcodec1_core";
+			 <&gcc GCC_VENUS0_AXI_CLK>;
+		clock-names = "core", "iface", "bus";
 		iommus = <&apps_iommu 5>;
 		memory-region = <&venus_mem>, <&venus_fw_iova>;
 		status = "okay";

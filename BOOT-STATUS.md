@@ -227,3 +227,10 @@
 - 但它是 RFC (朋友说的 v10 已合入不实), 全套搬运太大. 本地最小等价:
   power/venus-v1-vcodec-clks.patch, 在 core_power_v1 里顺手开关 vcodec0_clks
   (res 没列则 no-op, 其他 1xx 设备行为不变). HW_CTRL 保持 revert (它单上挂 probe).
+
+## Venus 回归二分 (2026-10-15)
+- r38 起 probe 挂 (-EBUSY, 主 vcodec 时钟 stuck off). 候选: 三域 attach 改了
+  上电时序. 测试: 退回单域 + msm8916-venus (resv/iommu 保留),
+  v1-vcodec patch 在 8916 res 下是 no-op, 不用动.
+- 若 probe 恢复: 凶手在电源簇 (域 attach/extra 时钟), iommu 无辜.
+- 若依然挂: iommu-resv 或 IOVA 节点背锅, 再砍.
