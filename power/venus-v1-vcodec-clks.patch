@@ -1,35 +1,120 @@
---- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 09:35:05.275716872 +0800
-+++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 09:35:05.287932700 +0800
-@@ -314,10 +314,30 @@
+--- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 10:53:30.335236093 +0800
++++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 10:53:30.359255281 +0800
+@@ -310,15 +310,115 @@
+ {
+ }
+ 
++static int vcodec_domains_enable(struct venus_core *core)
++{
++	const struct venus_resources *res = core->res;
++	struct device *pd_dev;
++	int i = 0, ret;
++
++	if (!res->vcodec_pmdomains)
++		return 0;
++
++	for (; i < res->vcodec_pmdomains_num; i++) {
++		pd_dev = core->pmdomains->pd_devs[i];
++		ret = pm_runtime_resume_and_get(pd_dev);
++		if (ret)
++			goto err;
++	}
++
++	return 0;
++err:
++	while (i--) {
++		pd_dev = core->pmdomains->pd_devs[i];
++		pm_runtime_put_sync(pd_dev);
++	}
++	return ret;
++}
++
++static void vcodec_domains_disable(struct venus_core *core)
++{
++	const struct venus_resources *res = core->res;
++	struct device *pd_dev;
++	int i = res->vcodec_pmdomains_num;
++
++	if (!res->vcodec_pmdomains)
++		return;
++
++	while (i--) {
++		pd_dev = core->pmdomains->pd_devs[i];
++		pm_runtime_put_sync(pd_dev);
++	}
++}
++
++static int vcodec_domains_set_hw(struct venus_core *core, bool is_hw)
++{
++	const struct venus_resources *res = core->res;
++	struct device *pd_dev;
++	int i = 0, ret;
++
++	for (; i < res->vcodec_pmdomains_num; i++) {
++		pd_dev = core->pmdomains->pd_devs[i];
++		ret = dev_pm_genpd_set_hwmode(pd_dev, is_hw);
++		if (ret && ret != -EOPNOTSUPP)
++			goto err;
++	}
++
++	return 0;
++err:
++	while (i--) {
++		pd_dev = core->pmdomains->pd_devs[i];
++		dev_pm_genpd_set_hwmode(pd_dev, !is_hw);
++	}
++	return ret;
++}
++
+ static int core_power_v1(struct venus_core *core, int on)
  {
  	int ret = 0;
  
 -	if (on == POWER_ON)
 +	if (on == POWER_ON) {
++		ret = vcodec_domains_enable(core);
++		if (ret)
++			return ret;
++
  		ret = core_clks_enable(core);
 -	else
 +		if (ret)
-+			return ret;
-+		/*
-+		 * 8939 has extra video cores with their own clocks.
-+		 * pm_ops_v1 has no session power hooks (those only exist in
-+		 * v3/v4), so enable them here, otherwise the firmware wedges
-+		 * at LoadResources. No-op when res lists no vcodec clocks
-+		 * (all other 1xx devices behave exactly as before).
-+		 */
-+		if (core->res->vcodec_clks_num) {
-+			ret = vcodec_clks_get(core, core->dev,
-+					      core->vcodec0_clks,
-+					      core->res->vcodec0_clks);
-+			if (!ret)
-+				ret = vcodec_clks_enable(core,
-+							 core->vcodec0_clks);
-+		}
++			goto fail_pmdomains;
++
++		if (!core->res->vcodec_pmdomains)
++			return 0;
++
++		ret = vcodec_clks_get(core, core->dev,
++				      core->vcodec0_clks,
++				      core->res->vcodec0_clks);
++		if (ret)
++			goto fail_core_clks;
++
++		ret = vcodec_clks_enable(core, core->vcodec0_clks);
++		if (ret)
++			goto fail_core_clks;
++
++		ret = vcodec_domains_set_hw(core, true);
++		if (ret)
++			goto fail_vcodec_clks;
++
 +	} else {
-+		if (core->res->vcodec_clks_num)
++		if (core->res->vcodec_pmdomains) {
++			vcodec_domains_set_hw(core, false);
 +			vcodec_clks_disable(core, core->vcodec0_clks);
++		}
  		core_clks_disable(core);
++		vcodec_domains_disable(core);
 +	}
++
++	return 0;
  
++fail_vcodec_clks:
++	vcodec_clks_disable(core, core->vcodec0_clks);
++fail_core_clks:
++	core_clks_disable(core);
++fail_pmdomains:
++	vcodec_domains_disable(core);
  	return ret;
  }
+ 

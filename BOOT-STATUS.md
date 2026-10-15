@@ -234,3 +234,18 @@
   v1-vcodec patch 在 8916 res 下是 no-op, 不用动.
 - 若 probe 恢复: 凶手在电源簇 (域 attach/extra 时钟), iommu 无辜.
 - 若依然挂: iommu-resv 或 IOVA 节点背锅, 再砍.
+
+## Venus 上游对齐 (2026-10-15, 待验证)
+- 找到真源头: 上游 MSM8939 Venus RFC (lwn 1068059, Erikas/André, 已合入主线),
+  在 torvalds master 逐行对过, 按最终形态 backport (不是朋友转述的中间版).
+- 最终形态与之前试错的关系:
+  * 三域 + 名字: 对 (保留).
+  * res vcodec_pmdomains/vcodec0_clks + freq/reg 表: 对, 保留 (6.12 结构全有).
+  * HW_CTRL 写 gcc: 错! 主线最终用运行时 dev_pm_genpd_set_hwmode,
+    gcc 干干净净 (master 的 core GDSC 无 flags). 已删 gcc patch.
+  * cp_*: 主线 msm8939_res 没有, 继续保持 0.
+  * 1xx 无 session 功耗钩子是真的: 上游把"双核随 core 一起上下电"做进
+    core_power_v1 (vcodec_domains_enable + vcodec_clks + set_hw),
+    power/venus-v1-vcodec-clks.patch 已按原文重写 (6.12 只有 vcodec0_clks,
+    无合并版 vcodec_clks, 故用 vcodec0 打全).
+  * IOVA 预留保留 (独立问题, 与上游无关的本地修复).

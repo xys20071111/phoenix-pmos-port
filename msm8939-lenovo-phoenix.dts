@@ -331,19 +331,26 @@
 &soc {
 	/* Venus video codec (same block/addr as 8916; downstream confirms
 	 * 0x1d00000 on 8939 too). 8939 has TWO video sub-cores with their own
-	 * clocks + GDSCs (mainline gcc-msm8939 models them; HW_CTRL added in
-	 * power/gcc-msm8939-venus-hwctrl.patch so the firmware drives them).
+	 * clocks + GDSCs; they are powered with the core (see
+	 * power/venus-v1-vcodec-clks.patch, backported from upstream
+	 * MSM8939 Venus support) and handed to HW mode at runtime.
 	 * Buffers must stay clear of the FW image at IOVA 0x0-0x500000
 	 * (see venus_fw_iova). */
 	venus_video: video-codec@1d00000 {
-		compatible = "qcom,msm8916-venus";
+		compatible = "qcom,msm8939-venus";
 		reg = <0x01d00000 0xff000>;
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
-		power-domains = <&gcc VENUS_GDSC>;
+		power-domains = <&gcc VENUS_GDSC>,
+				<&gcc VENUS_CORE0_GDSC>,
+				<&gcc VENUS_CORE1_GDSC>;
+		power-domain-names = "venus", "vcodec0", "vcodec1";
 		clocks = <&gcc GCC_VENUS0_VCODEC0_CLK>,
 			 <&gcc GCC_VENUS0_AHB_CLK>,
-			 <&gcc GCC_VENUS0_AXI_CLK>;
-		clock-names = "core", "iface", "bus";
+			 <&gcc GCC_VENUS0_AXI_CLK>,
+			 <&gcc GCC_VENUS0_CORE0_VCODEC0_CLK>,
+			 <&gcc GCC_VENUS0_CORE1_VCODEC0_CLK>;
+		clock-names = "core", "iface", "bus",
+			      "vcodec0_core", "vcodec1_core";
 		iommus = <&apps_iommu 5>;
 		memory-region = <&venus_mem>, <&venus_fw_iova>;
 		status = "okay";
