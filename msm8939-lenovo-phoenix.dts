@@ -317,12 +317,25 @@
 	status = "okay";
 };
 
+&{/reserved-memory} {
+	/* IOVA-space reservation (no reg = not physical memory):
+	 * venus firmware lives at IOVA 0x0-0x500000; keep the dma-iommu
+	 * allocator away so buffers pass the firmware's IsBufferProtected
+	 * check. Consumed via qcom_iommu.get_resv_regions
+	 * (power/qcom-iommu-resv-regions.patch). */
+	venus_fw_iova: venus-fw-iova {
+		iommu-addresses = <&venus_video 0x0 0x500000>;
+	};
+};
+
 &soc {
 	/* Venus video codec (same block/addr as 8916; downstream confirms
-	 * 0x1d00000 on 8939 too). Needs qcom/venus-1.8/venus.mbn (PIL-signed,
-	 * still hunting) + userspace v4l2m2m (GStreamer) to actually use it. */
-	video-codec@1d00000 {
-		compatible = "qcom,msm8939-venus";
+	 * 0x1d00000 on 8939 too). Buffers must stay clear of the FW image at
+	 * IOVA 0x0-0x500000 (see venus_fw_iova below); TZ content-protection
+	 * intentionally left at defaults (no cp_*), so only the FW image
+	 * itself is off-limits. */
+	venus_video: video-codec@1d00000 {
+		compatible = "qcom,msm8916-venus";
 		reg = <0x01d00000 0xff000>;
 		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&gcc VENUS_GDSC>;
@@ -331,7 +344,7 @@
 			 <&gcc GCC_VENUS0_AXI_CLK>;
 		clock-names = "core", "iface", "bus";
 		iommus = <&apps_iommu 5>;
-		memory-region = <&venus_mem>;
+		memory-region = <&venus_mem>, <&venus_fw_iova>;
 		status = "okay";
 
 		video-decoder {

@@ -1,0 +1,18 @@
+--- a/drivers/iommu/arm/arm-smmu/qcom_iommu.c	2026-10-15 08:44:24.928889362 +0800
++++ b/drivers/iommu/arm/arm-smmu/qcom_iommu.c	2026-10-15 08:44:29.251126566 +0800
+@@ -22,6 +22,7 @@
+ #include <linux/init.h>
+ #include <linux/mutex.h>
+ #include <linux/of.h>
++#include <linux/of_iommu.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm.h>
+@@ -598,6 +599,7 @@
+ 	.probe_device	= qcom_iommu_probe_device,
+ 	.device_group	= generic_device_group,
+ 	.of_xlate	= qcom_iommu_of_xlate,
++	.get_resv_regions	= of_iommu_get_resv_regions,
+ 	.pgsize_bitmap	= SZ_4K | SZ_64K | SZ_1M | SZ_16M,
+ 	.default_domain_ops = &(const struct iommu_domain_ops) {
+ 		.attach_dev	= qcom_iommu_attach_dev,

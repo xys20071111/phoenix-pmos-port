@@ -196,3 +196,12 @@
   0x1000000/0x24800000), 不是抄 sdm660 的.
 - 修法: power/venus-msm8939-res.patch 加 msm8939_res + compatible,
   DTS 切 qcom,msm8939-venus. (教训: patch 手搓行号必错, 改完 diff -u 生成.)
+
+## Venus IOVA 预留 (2026-10-15, 待验证)
+- 方向修正: cp_* 设了反而把 0x0~0x5dc00000 锁成 DRM 区 (非安全缓冲全拒),
+  已 revert msm8939_res, 回 msm8916-venus. 只保固件镜像区 0x0~0x500000.
+- 做法: DT 预留 IOVA (reserved-memory 无 reg 节点 + iommu-addresses,
+  memory-region 挂上) + power/qcom-iommu-resv-regions.patch
+  (给 qcom_iommu 补 get_resv_regions, 调通用 of_iommu_get_resv_regions).
+- 依据: dma-iommu base_pfn=1 (从 0x1000 往上分, 必撞固件); qcom_iommu 之前
+  根本没实现 get_resv_regions, DT 写了也白写.
