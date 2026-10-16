@@ -10,7 +10,7 @@ Working: display (NT35532 driver, ported init sequence), backlight/brightness,
 touchscreen (Goodix GT9xx), volume keys, hall sensor, vibrator, eMMC, SD slot,
 USB networking + SSH, battery voltage + percentage (OCV table) + charging
 indication (SMB358), accelerometer, WiFi (WCN3680, dual-band),
-GPU 3D (Adreno 405 / freedreno FD405), audio output (speaker mono + headphones dual-mono,
+GPU 3D (Adreno 405 / freedreno FD405), video decode (Venus H264), audio output (speaker mono + headphones dual-mono,
 desktop via UCM), poweroff/reboot.
 
 Parked: USB OTG (see `otg/OTG.md`), light sensor (probes, reads zero),

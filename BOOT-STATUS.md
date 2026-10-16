@@ -269,3 +269,13 @@
   没碰 mem_protect_video_var 也过. cp 支线仅当上面两修后仍楔死才开.
 - 逆袭验证点: genpd core0/1 ON + 两颗 core 时钟 rate >= 133MHz +
   IRQ 计数持续增长 + 无 "output_manager pool is NULL".
+
+## Venus 硬解打通 (2026-10-16)
+- ffmpeg h264_v4l2m2m: 1080p25 5 秒片 125 帧, 48fps, IRQ 34->392.
+- 拼图凑齐: 三域 + vcodec 双钟 (SW 上电) + 运行时 set_hwmode 交硬件
+  (TRIGGER, 不是 HW_CTRL!) + IOVA 躲固件区. 缺一即楔 (NULL pool/-110/-EBUSY).
+- 关键纠错史: cp_* 设了更糟 (revert); HW_CTRL 单上挂 probe (revert);
+  core1 时钟曾跑 XO 未 set_rate (拆分修好); IsBufferProtected 全是噪音.
+- 上游: MSM8939 Venus RFC (lwn 1068059, Erikas/André), master 已合入,
+  本地按 6.12 结构逐行 backport (合并版 vcodec_clks 拆回 vcodec0/1).
+- 遗留: Totem/GStreamer 通路待验, 编码器待验, HEVC 未开.
