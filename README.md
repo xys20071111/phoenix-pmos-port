@@ -11,16 +11,26 @@ touchscreen (Goodix GT9xx), volume keys, hall sensor, vibrator, eMMC, SD slot,
 USB networking + SSH, battery voltage + percentage (OCV table) + charging
 indication (SMB358), accelerometer, WiFi (WCN3680, dual-band),
 GPU 3D (Adreno 405 / freedreno FD405), video decode (Venus H264), audio output (speaker mono + headphones dual-mono,
-desktop via UCM), poweroff/reboot.
+desktop via UCM), **modem: SMS send/receive + SIM/IMEI/operator**
+(2026-10; see `MODEM.md`), poweroff/reboot.
+
+Blocked (external, not our port): phone calls — this modem firmware has no
+VoLTE and CS voice is equally dead on stock/LineageOS; the whole Q6 voice
+chain (CS-Voice snd card, q6voiced) is wired up but unverifiable.
 
 Parked: USB OTG (see `otg/OTG.md`), light sensor (probes, reads zero),
-microphone (capture link present, function unverified), headset buttons
-(thresholds in, unverified), modem calls, GPS, camera,
+microphone (capture link presents, function unverified), headset buttons
+(thresholds in, unverified), mobile data (bam-dmux netdevs exist, WDS/NM
+path unverified — see `MODEM.md`), GPS, camera,
 magnetometer (no mainline driver).
 
 ## Contents
 
-- `msm8939-lenovo-phoenix.dts` — mainline device tree.
+- `msm8939-lenovo-phoenix.dts` — mainline device tree
+  (modem enabled via `msm8916-modem-qdsp6.dtsi`).
+- `modem/qcom-bam-dmux-register-netdevs.patch` — kernel patch: register all
+  DMUX netdevs at probe (2016-era MSM8939 fw never announces channels;
+  without net ports ModemManager refuses to create the modem).
 - `panel/panel-novatek-nt35532.c` — NT35532 DRM driver
   (upstream base + phoenix init sequence + DCS backlight).
 - `panel/panel-novatek-nt35532.kconfig` — Kconfig snippet.
@@ -42,7 +52,8 @@ magnetometer (no mainline driver).
 - `fatread.py` — minimal FAT12/16 reader (for modem partition forensics).
 - `split-image.sh` — split a pmbootstrap combined image into
   boot/root partition images (validated byte-identical roundtrip).
-- `BOOT-STATUS.md`, `WIFI.md`, `BACKUP.md`, `BUILD.md`, `otg/OTG.md` — notes and findings.
+- `BOOT-STATUS.md`, `WIFI.md`, `MODEM.md`, `BACKUP.md`, `BUILD.md`,
+  `otg/OTG.md` — notes and findings.
 - `firmware-lenovo-phoenix/` — local-only firmware package template + provenance
   (APKBUILD + README; blobs live only in the pmaports working tree).
 - `images*/`, `backups/`, `firmware-factory/`, `bootloaders/` — local only

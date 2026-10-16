@@ -290,3 +290,29 @@
   (kernel/device/firmware/lk2nd), 含重建步骤与 upstream 化清单.
 - 包状态: kernel r44 (全部补丁), device r6 (+venus 固件依赖),
   firmware-lenovo-phoenix-venus (7 件套), lk2nd 23.1 + dtb-files patch.
+
+## Modem 打通: 短信 OK (2026-10-16)
+
+细节全部在 `MODEM.md`. 概要:
+
+- 固件从 modem 分区 FAT (backups/modem.bin, fatread.py) 提取 23 件
+  (mba.mbn + modem.mdt + modem.b00..b26), firmware-lenovo-phoenix-modem
+  子包进 /lib/firmware/; modem ELF 跨度实测 85 MiB -> mpss_mem 0x5600000.
+- DTS: include msm8916-modem-qdsp6.dtsi (音频同步切 Q6/QDSP6 sndcard,
+  旧 direct-LPASS &sound 删除; &lpass reserved), rmtfs 放大到 stock 0x160000.
+- 首启即过: "MBA booted ... loading mpss", 无 watchdog (此前 kiwi 代理 DTB
+  时代的 crash 循环就是固件+内存区没配好).
+- 关键坑 (8916 系没有的): 这颗 2016 版 8939 固件不主动宣布 bam-dmux 数据
+  通道, 而 ModemManager 核心硬性要求 net 口才肯建 modem 对象 -> 打不开.
+  kernel r46 加本地补丁 (probe 注册 wwan0..7, 通道激活仍走 ndo_open/远端
+  OPEN) 后 modem 对象出来. 详见 modem/qcom-bam-dmux-register-netdevs.patch.
+- 用户空间: device deps 用户空间链 (rmtfs/q6voiced/msm-modem uim) +
+  ModemManager (postmarketos-base-ui). /dev/wwan0qmi0 (rpmsg) 全服务可见.
+- 短信收发 OK; IMEI/运营商/SIM 读出; 注册状态正常.
+- 通话: 该固件无 VoLTE, stock/LineageOS 同样打不了 -> 手机通话 block
+  (外部限制, Q6 语音链路就绪). 漫游卡会 location-area-not-allowed (cause
+  13, 网络侧限制), 换本地卡即通.
+- 音频在 modem 上线后走 Q6 路线: card0 "msm8916" (MultiMedia1..4 +
+  CS-Voice), 旧的 phoenix direct-LPASS 卡消失.
+- 包状态: kernel r46 (+bam-dmux patch), device r7 (+modem 用户空间链),
+  firmware-lenovo-phoenix r1 (+modem 子包).

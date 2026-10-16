@@ -12,10 +12,14 @@
 /dts-v1/;
 
 #include "msm8939-pm8916.dtsi"
+/* Modem + QDSP6 audio: &mpss (PIL), &bam_dmux, APR/q6 dais (audio +
+ * CS-Voice), &memshare/&gps_mem. Swaps &sound to modem-qdsp6 sndcard
+ * and puts &lpass behind the modem ("reserved"). */
+#include "msm8916-modem-qdsp6.dtsi"
+
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
-#include <dt-bindings/sound/apq8016-lpass.h>
 
 / {
 	model = "Lenovo PHAB Plus";
@@ -295,14 +299,14 @@
 	status = "okay";
 };
 
-/* Audio: internal codec (SoC digital + PM8916 analog) via LPASS,
- * machine driver qcom,apq8016-sbc-sndcard (nodes from msm8939-pm8916.dtsi).
+/* Audio: routed through the modem's QDSP6 (msm8916-modem-qdsp6.dtsi),
+ * machine driver qcom,msm8916-qdsp6-sndcard. Once mpss runs it owns
+ * LPASS, so the old direct-LPASS card (apq8016-sbc-sndcard) is gone:
+ * &lpass must stay "reserved", media/call take MultiMedia/CS-Voice
+ * frontends and PDM backend links (backend0/1 use &lpass_codec +
+ * &pm8916_codec, whose board properties are kept below).
  * Downstream: qcom,msm8x16-audio-codec internal, micbias1-ext-cap, NO
  * external speaker amp (pb1770m deletes cdc-ext-spk-pa). Template: kiwi. */
-&lpass {
-	status = "okay";
-};
-
 &lpass_codec {
 	status = "okay";
 };
@@ -317,7 +321,21 @@
 	status = "okay";
 };
 
+/* Modem carve-outs, stock downstream sizes:
+ * - mpss: modem_adsp_region = 0x86800000 + 0x5600000 (86 MiB). The stock
+ *   modem ELF (firmware-lenovo-phoenix-modem) spans exactly 85 MiB
+ *   (0xc0000000..0xc54f0000), so 86 MiB is the safe minimum.
+ * - rmtfs: downstream rmtfs_sharedmem = 0x160000; the dtsi default
+ *   0xe0000 is too small for rmtfsd to serve this device's EFS files. */
+&mpss_mem {
+	reg = <0x0 0x86800000 0x0 0x5600000>;
+};
+
 &{/reserved-memory} {
+	rmtfs@86700000 {
+		reg = <0x0 0x86700000 0x0 0x160000>;
+	};
+
 	/* IOVA-space reservation (no reg = not physical memory):
 	 * venus firmware lives at IOVA 0x0-0x500000; keep the dma-iommu
 	 * allocator away so buffers pass the firmware's IsBufferProtected
@@ -381,45 +399,6 @@
 	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
 	qcom,mbhc-vthreshold-high = <75 150 237 450 500>;
 	status = "okay";
-};
-
-&sound {
-	model = "phoenix";
-	audio-routing =
-		"AMIC1", "MIC BIAS External1",
-		"AMIC2", "MIC BIAS Internal2",
-		"AMIC3", "MIC BIAS External1";
-	/* NOTE: no MI2S pinctrl here. The internal codec path uses PDM
-	 * (cdc_pdm, gpio63-68); PRI_MI2S pins (gpio113-116) stay as GPIOs
-	 * because downstream puts the ltr559 IRQ on gpio115. Claiming
-	 * pri_mi2s here steals 115 and breaks the light sensor (and gains
-	 * nothing: there is no external MI2S codec on this board). */
-	pinctrl-0 = <&cdc_pdm_default>;
-	pinctrl-1 = <&cdc_pdm_sleep>;
-	pinctrl-names = "default", "sleep";
-	status = "okay";
-
-	dai-link-primary {
-		link-name = "Primary MI2S";
-		cpu {
-			sound-dai = <&lpass MI2S_PRIMARY>;
-		};
-		codec {
-			sound-dai = <&lpass_codec 0>, <&pm8916_codec 0>;
-		};
-	};
-
-	/* Capture (mics): digital TX1 + analog TX1 behind tertiary MI2S.
-	 * Internal path only, no pins needed (same as playback). */
-	dai-link-tertiary {
-		link-name = "Tertiary MI2S";
-		cpu {
-			sound-dai = <&lpass MI2S_TERTIARY>;
-		};
-		codec {
-			sound-dai = <&lpass_codec 1>, <&pm8916_codec 1>;
-		};
-	};
 };
 
 &pm8916_resin {

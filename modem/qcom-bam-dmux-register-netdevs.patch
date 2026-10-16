@@ -1,0 +1,112 @@
+From: phoenix-pmos-port <xys20071111@hotmail.com>
+Subject: [PATCH] net: wwan: qcom_bam_dmux: register all netdevs at probe
+
+ModemManager requires a net port before it creates the modem object,
+but some modem firmware (observed on MSM8939/GR8, stock 2015 image)
+never announces its BAM-DMUX data channels at boot: channels are only
+opened once data is actually requested. As a result such devices never
+get a netdev and the modem stays invisible with
+  "couldnt create modem for device qcom-soc: Failed to find a net port
+   in the QMI modem".
+
+Register one network device per DMUX channel (wwan0..wwan7) directly
+in probe. Nothing is forced on the modem: channels are still activated
+lazily via ndo_open (host OPEN) / remote OPEN as before.
+
+Signed-off-by: Tom Xue <xys20071111@hotmail.com>
+---
+--- a/drivers/net/wwan/qcom_bam_dmux.c
++++ b/drivers/net/wwan/qcom_bam_dmux.c
+@@ -430,21 +430,32 @@
+ 	eth_random_addr(dev->perm_addr);
+ }
+ 
+-static void bam_dmux_register_netdev_work(struct work_struct *work)
++/* Register one netdev per DMUX channel (wwan0..wwan7, dev_port = ch).
++ * Netdevs are created up-front at probe so that userspace (ModemManager)
++ * sees the net ports and creates the modem object even on firmware that
++ * only opens data channels lazily. Actual channel setup is not forced on
++ * the modem: the host-side OPEN command is only sent on ndo_open, and
++ * remote OPEN closes down the link. The netdevs stay registered across
++ * runtime suspend/resume. */
++static int bam_dmux_register_netdevs(struct bam_dmux *dmux)
+ {
+-	struct bam_dmux *dmux = container_of(work, struct bam_dmux, register_netdev_work);
+ 	struct bam_dmux_netdev *bndev;
+ 	struct net_device *netdev;
+-	int ch, ret;
++	unsigned int ch;
++	int ret = 0;
+ 
+-	for_each_set_bit(ch, dmux->remote_channels, BAM_DMUX_NUM_CH) {
++	WARN_ON(!rtnl_is_locked());
++
++	for (ch = 0; ch < BAM_DMUX_NUM_CH; ++ch) {
+ 		if (dmux->netdevs[ch])
+ 			continue;
+ 
+ 		netdev = alloc_netdev(sizeof(*bndev), "wwan%d", NET_NAME_ENUM,
+ 				      bam_dmux_netdev_setup);
+-		if (!netdev)
+-			return;
++		if (!netdev) {
++			ret = -ENOMEM;
++			break;
++		}
+ 
+ 		SET_NETDEV_DEV(netdev, dmux->dev);
+ 		netdev->dev_port = ch;
+@@ -453,16 +464,28 @@
+ 		bndev->dmux = dmux;
+ 		bndev->ch = ch;
+ 
+-		ret = register_netdev(netdev);
++		ret = register_netdevice(netdev);
+ 		if (ret) {
+ 			dev_err(dmux->dev, "Failed to register netdev for channel %u: %d\n",
+ 				ch, ret);
+ 			free_netdev(netdev);
+-			return;
++			netdev = NULL;
++			break;
+ 		}
+ 
+ 		dmux->netdevs[ch] = netdev;
+ 	}
++
++	return ret;
++}
++
++static void bam_dmux_register_netdev_work(struct work_struct *work)
++{
++	struct bam_dmux *dmux = container_of(work, struct bam_dmux, register_netdev_work);
++
++	rtnl_lock();
++	bam_dmux_register_netdevs(dmux);
++	rtnl_unlock();
+ }
+ 
+ static void bam_dmux_rx_callback(void *data);
+@@ -843,6 +866,22 @@
+ 			bam_dmux_power_off(dmux);
+ 	}
+ 
++	/* Announce all netdevs up-front (see bam_dmux_register_netdevs). */
++	rtnl_lock();
++	ret = bam_dmux_register_netdevs(dmux);
++	rtnl_unlock();
++	if (ret) {
++		rtnl_lock();
++		for (i = 0; i < BAM_DMUX_NUM_CH; ++i) {
++			if (dmux->netdevs[i]) {
++				unregister_netdevice(dmux->netdevs[i]);
++				dmux->netdevs[i] = NULL;
++			}
++		}
++		rtnl_unlock();
++		goto err_disable_pm;
++	}
++
+ 	return 0;
+ 
+ err_disable_pm:

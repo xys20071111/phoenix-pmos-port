@@ -38,6 +38,7 @@ package silently.
 | `power/venus-msm8939-res.patch` | same (msm8939 venus resources: dual-core clocks/domains, no `cp_*`) |
 | `power/venus-v1-vcodec-clks.patch` | same (core power + clock sequencing on the 1xx path, backported from upstream) |
 | `power/gcc-msm8939-venus-trigger.patch` | same (`HW_CTRL_TRIGGER` on venus core GDSCs + `BRANCH_HALT` on core clocks) |
+| `modem/qcom-bam-dmux-register-netdevs.patch` | same (bam-dmux: register `wwan0..wwan7` netdevs at probe; MSM8939 2015 fw never announces DMUX channels at boot, so ModemManager never sees a net port and refuses to create the modem) |
 | a5xx `MODULE_FIRMWARE` | inline `printf` append in `prepare()` (no repo file; keeps a420 fw refs in `msm.ko`) |
 
 ## 2. Device: `device/testing/device-qcom-msm8916`
@@ -52,13 +53,21 @@ adds `panel-novatek-nt35532`, restores `msm`.
 | `audio/90-msm8916-audio.rules` | installed to `/usr/lib/udev/rules.d/` (runs the script when the card appears) |
 | `ucm2/phoenix/phoenix.conf`, `HiFi.conf` | installed to `/usr/share/alsa/ucm2/phoenix/` (PipeWire profile) |
 
-`depends=` additions (local): `alsa-utils`, `firmware-lenovo-phoenix-venus`.
+`depends=` additions (local): `alsa-utils`,
+`firmware-lenovo-phoenix-venus`, `firmware-lenovo-phoenix-modem`,
+`soc-qcom-msm8916-rproc`, `q6voiced` (pulls `msm-modem`,
+`msm-modem-uim-selection` → `rmtfs libqmi qmi-utils`; ModemManager comes
+in via `postmarketos-base-ui`).
 
 ## 3. Firmware: `device/testing/firmware-lenovo-phoenix` (new, local-only)
 
 Stock venus blobs (`venus.{mdt,mbn,b00..b04}` from the stock
 `/system/vendor/firmware/`) installed to
 `/usr/lib/firmware/qcom/venus-1.8/` via the `-venus` subpackage.
+Stock modem blobs (`mba.mbn`, `modem.mdt`, `modem.bNN` extracted from
+the modem/NON-HLOS partition with `fatread.py`) installed to
+`/lib/firmware/` via the `-modem` subpackage (modem bring-up, see
+`firmware-lenovo-phoenix/README.md`).
 See `firmware-lenovo-phoenix/README.md`. Blobs live only in the pmaports
 working tree; the repo keeps the APKBUILD template + README.
 
