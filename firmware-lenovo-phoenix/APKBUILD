@@ -1,0 +1,40 @@
+# Maintainer: phoenix-pmos-port (local only, NOT upstreamable)
+# Venus video firmware for Lenovo PHAB Plus PB1-770N.
+# Blobs are proprietary stock files and MUST NOT be committed anywhere:
+# extract them from the stock system image
+#   (/system/vendor/firmware/venus.{mdt,mbn,b00,b01,b02,b03,b04})
+# and place the 7 files next to this APKBUILD before building.
+# (Our copy came from the QPST stock package's system_*.img, 2015 build,
+#  VIDEO.VE.1.8-00138. device-qcom-msm8916 depends on the -venus subpackage.)
+maintainer="phoenix-pmos-port local"
+pkgname=firmware-lenovo-phoenix
+pkgver=1.0
+pkgrel=0
+pkgdesc="Stock firmware for Lenovo PHAB Plus (venus video)"
+url="https://github.com/xys20071111/phoenix-pmos-port"
+license="proprietary"
+arch="noarch"
+options="!check !strip !archcheck !tracedeps"
+source="
+	venus.mdt
+	venus.mbn
+	venus.b00
+	venus.b01
+	venus.b02
+	venus.b03
+	venus.b04
+	"
+subpackages="$pkgname-venus"
+
+package() {
+	# parent package is empty
+	mkdir -p "$pkgdir"
+}
+
+venus() {
+	pkgdesc="$pkgdesc (venus video decoder/encoder)"
+	install -Dm644 "$srcdir"/venus.mdt "$srcdir"/venus.mbn \
+		"$srcdir"/venus.b00 "$srcdir"/venus.b01 "$srcdir"/venus.b02 \
+		"$srcdir"/venus.b03 "$srcdir"/venus.b04 \
+		-t "$subpkgdir"/usr/lib/firmware/qcom/venus-1.8/
+}

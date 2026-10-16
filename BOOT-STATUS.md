@@ -279,3 +279,8 @@
 - 上游: MSM8939 Venus RFC (lwn 1068059, Erikas/André), master 已合入,
   本地按 6.12 结构逐行 backport (合并版 vcodec_clks 拆回 vcodec0/1).
 - 遗留: Totem/GStreamer 通路待验, 编码器待验, HEVC 未开.
+
+## Venus 固件进包 (2026-10-16)
+- firmware-lenovo-phoenix (本地包, 不可 upstream): stock venus 7 件套进
+  /usr/lib/firmware/qcom/venus-1.8/, device 包依赖 -venus 子包.
+- GPU/WCNSS 不打: 前者 linux-firmware 已覆盖 (路径冲突), 后者 ini 无主线消费者.
