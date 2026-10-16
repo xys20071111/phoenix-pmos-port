@@ -284,3 +284,9 @@
 - firmware-lenovo-phoenix (本地包, 不可 upstream): stock venus 7 件套进
   /usr/lib/firmware/qcom/venus-1.8/, device 包依赖 -venus 子包.
 - GPU/WCNSS 不打: 前者 linux-firmware 已覆盖 (路径冲突), 后者 ini 无主线消费者.
+
+## 构建文档化 (2026-10-16)
+- `BUILD.md`: repo 文件到 4 个 pmaports 包 + 1 新包的完整映射
+  (kernel/device/firmware/lk2nd), 含重建步骤与 upstream 化清单.
+- 包状态: kernel r44 (全部补丁), device r6 (+venus 固件依赖),
+  firmware-lenovo-phoenix-venus (7 件套), lk2nd 23.1 + dtb-files patch.

@@ -42,7 +42,9 @@ magnetometer (no mainline driver).
 - `fatread.py` — minimal FAT12/16 reader (for modem partition forensics).
 - `split-image.sh` — split a pmbootstrap combined image into
   boot/root partition images (validated byte-identical roundtrip).
-- `BOOT-STATUS.md`, `WIFI.md`, `BACKUP.md`, `otg/OTG.md` — notes and findings.
+- `BOOT-STATUS.md`, `WIFI.md`, `BACKUP.md`, `BUILD.md`, `otg/OTG.md` — notes and findings.
+- `firmware-lenovo-phoenix/` — local-only firmware package template + provenance
+  (APKBUILD + README; blobs live only in the pmaports working tree).
 - `images*/`, `backups/`, `firmware-factory/`, `bootloaders/` — local only
   (git-ignored).
 
