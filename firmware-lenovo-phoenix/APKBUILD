@@ -13,7 +13,7 @@ pkgrel=0
 pkgdesc="Stock firmware for Lenovo PHAB Plus (venus video)"
 url="https://github.com/xys20071111/phoenix-pmos-port"
 license="proprietary"
-arch="noarch"
+arch="aarch64"
 options="!check !strip !archcheck !tracedeps"
 source="
 	venus.mdt
