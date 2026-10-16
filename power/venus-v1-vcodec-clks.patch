@@ -1,5 +1,12 @@
---- a/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 17:40:37.592832009 +0800
-+++ b/drivers/media/platform/qcom/venus/pm_helpers.c	2026-10-15 17:40:37.610502969 +0800
+# 1xx PM helpers: attach vcodec power domains + enable/rate the two vcodec-core
+# clocks alongside the core (pins on msm8939 have nothing pulling the cores up
+# otherwise), then pass hardware control to the firmware (upstream MSM8939
+# Venus support, "power domain enable logic" patch, adapted to the 6.12 struct:
+# no merged vcodec_clks array, so vcodec0_clks/vcodec1_clks are handled
+# separately; each carries one clock per venus-msm8939-res.patch).
+
+--- a/drivers/media/platform/qcom/venus/pm_helpers.c
++++ b/drivers/media/platform/qcom/venus/pm_helpers.c
 @@ -291,10 +291,93 @@
  	return ret;
  }
@@ -112,7 +119,7 @@
  }
  
  static void core_put_v1(struct venus_core *core)
-@@ -314,11 +406,43 @@
+@@ -314,11 +406,50 @@
  {
  	int ret = 0;
  
@@ -134,6 +141,10 @@
 +		if (ret)
 +			goto fail_core_clks;
 +
++		ret = vcodec_clks_enable(core, core->vcodec1_clks);
++		if (ret)
++			goto fail_vcodec0_clks;
++
 +		ret = vcodec_domains_set_hw(core, true);
 +		if (ret)
 +			goto fail_vcodec_clks;
@@ -142,6 +153,7 @@
 +		if (core->res->vcodec_pmdomains) {
 +			vcodec_domains_set_hw(core, false);
 +			vcodec_clks_disable(core, core->vcodec0_clks);
++			vcodec_clks_disable(core, core->vcodec1_clks);
 +		}
  		core_clks_disable(core);
 +		vcodec_domains_disable(core);
@@ -150,6 +162,8 @@
 +	return 0;
  
 +fail_vcodec_clks:
++	vcodec_clks_disable(core, core->vcodec1_clks);
++fail_vcodec0_clks:
 +	vcodec_clks_disable(core, core->vcodec0_clks);
 +fail_core_clks:
 +	core_clks_disable(core);

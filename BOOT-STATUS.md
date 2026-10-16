@@ -249,3 +249,23 @@
     power/venus-v1-vcodec-clks.patch 已按原文重写 (6.12 只有 vcodec0_clks,
     无合并版 vcodec_clks, 故用 vcodec0 打全).
   * IOVA 预留保留 (独立问题, 与上游无关的本地修复).
+
+## Venus v9 最终形态修正 (2026-10-15, 待验证)
+- 逐行对过 lore 原始序列 (v7 lkml 11699 / v8 2/9 lkml 06219 / v9 cover
+  LWN 1074496 / v10 ratatoskr 17350949) 后, 发现"master 无 gcc flags"是
+  合并时序造成的错觉: v10 说明 media 部分已 apply, 但 DT/clk 两片还 pending,
+  master 快照里看不到.
+- 修正 1: gcc 必须有 HW_CTRL_TRIGGER (下游 qcom,supports-hw-trigger 的对应
+  flag; 当时 b2c8ac7 用的 HW_CTRL 是错 flag, 与 BRANCH_HALT 语义互锁, 这就
+  是那次 -EBUSY 的来路). power/gcc-msm8939-venus-trigger.patch 新增:
+  两个 core GDSC + TRIGGER, 两颗 core 分支时钟显式 BRANCH_HALT (即 0, 与
+  上游 v9 一致; 若 probe 再挂, 按 v8 换 BRANCH_HALT_SKIP, 参考
+  cdc59600bccf msm8953 同款).
+- 修正 2: res 里 vcodec1_clks 手抄成与 vcodec0_clks 重复 → 6.12
+  core_clks_set_rate 只 set vcodec{0,1}_clks[0], 结果 GCC_VENUS0_CORE1
+  时钟从未 set_rate (跑 XO). 改为两数组各一钟, vcodec_clks_num=1,
+  pm 逻辑对两数组 enable/disable (v4 路径同款用法).
+- TZ/cp 嫌疑降权: 上游 Fluster 试机都是普通 8939 手机 (z00t/l9100),
+  没碰 mem_protect_video_var 也过. cp 支线仅当上面两修后仍楔死才开.
+- 逆袭验证点: genpd core0/1 ON + 两颗 core 时钟 rate >= 133MHz +
+  IRQ 计数持续增长 + 无 "output_manager pool is NULL".

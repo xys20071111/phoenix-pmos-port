@@ -331,9 +331,10 @@
 &soc {
 	/* Venus video codec (same block/addr as 8916; downstream confirms
 	 * 0x1d00000 on 8939 too). 8939 has TWO video sub-cores with their own
-	 * clocks + GDSCs; they are powered with the core (see
-	 * power/venus-v1-vcodec-clks.patch, backported from upstream
-	 * MSM8939 Venus support) and handed to HW mode at runtime.
+	 * clocks + GDSCs; they are powered with the core
+	 * (power/venus-v1-vcodec-clks.patch) and handed to HW mode at runtime
+	 * via HW_CTRL_TRIGGER (power/gcc-msm8939-venus-trigger.patch) — both
+	 * backported from the upstream MSM8939 Venus support.
 	 * Buffers must stay clear of the FW image at IOVA 0x0-0x500000
 	 * (see venus_fw_iova). */
 	venus_video: video-codec@1d00000 {
