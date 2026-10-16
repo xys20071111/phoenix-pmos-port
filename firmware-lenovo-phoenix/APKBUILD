@@ -6,7 +6,7 @@
 # and place the 7 files next to this APKBUILD before building.
 # (Our copy came from the QPST stock package's system_*.img, 2015 build,
 #  VIDEO.VE.1.8-00138. device-qcom-msm8916 depends on the -venus subpackage.)
-maintainer="phoenix-pmos-port local"
+maintainer="Tom Xue <xys20071111@hotmail.com>"
 pkgname=firmware-lenovo-phoenix
 pkgver=1.0
 pkgrel=0
