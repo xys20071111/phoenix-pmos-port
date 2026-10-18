@@ -229,6 +229,123 @@
 	status = "okay";
 };
 
+/* ===== Cameras (Step 2: DTS wiring; rear needs the Step 3 driver) ===== */
+
+&camss {
+	/* port@0 -> csiphy0/csid0 (rear, 2-lane), port@1 -> csiphy1/csid1
+	 * (front, 2-lane). Lane numbering per qcom,msm8916-camss.yaml:
+	 * camss side 0/2 = physical indexes, sensor side 1/2 = logical. */
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csiphy0_ep: endpoint {
+				data-lanes = <0 2>;
+				remote-endpoint = <&ov13850_ep>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csiphy1_ep: endpoint {
+				data-lanes = <0 2>;
+				remote-endpoint = <&ov5693_ep>;
+			};
+		};
+	};
+};
+
+&cci {
+	status = "okay";
+};
+
+&cci_i2c0 {
+	/* Rear: OV13850 (module sunny_q13v04b). reg 0x36 is a PLACEHOLDER:
+	 * the r52 powered-window scan proved 0x10 belongs to the FRONT
+	 * OV5693 (chip-id 0x5690 read over the shared CCI bus) and the rear
+	 * module never ACKs anywhere while its standby pin floats asleep.
+	 * Step 3's probe verdict decides the real rear address.
+	 * MCLK stays at the stock 24 MHz (the Step 3 driver must keep its
+	 * PLL tables in sync with this rate + 300 MHz link-freq). */
+	ov13850: camera@36 {
+		compatible = "ovti,ov13850";
+		reg = <0x36>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_rear_default>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&pm8916_l17>;	/* cam_vana 2.85V */
+		dvdd-supply = <&pm8916_l2>;	/* cam_vdig 1.20V */
+		dovdd-supply = <&pm8916_l6>;	/* cam_vio  1.80V */
+
+		powerdown-gpios = <&tlmm 34 GPIO_ACTIVE_LOW>;	/* MCAM_STANDBY: phys LOW=standby */
+		reset-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;	/* MCAM_RESET */
+
+		orientation = <1>;	/* back facing */
+		rotation = <90>;	/* downstream qcom,mount-angle */
+
+		port {
+			ov13850_ep: endpoint {
+				link-frequencies = /bits/ 64 <300000000>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+
+	/* Front: OV5693 (module sunny_q5v41b). Slave address 0x10 MEASURED
+	 * (r52): chip-id 0x5690 read from 0x10 over the shared CCI bus
+	 * while the ov5693 driver held this module awake (polarity, rails
+	 * and 19.2 MHz MCLK all exercised as configured).
+	 * Upstream ov5693.c mode tables assume 19.2 MHz MCLK (stock ran
+	 * 24 MHz) and 419.2 MHz link-freq. */
+	ov5693: camera@10 {
+		compatible = "ovti,ov5693";
+		reg = <0x10>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_front_default>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		avdd-supply = <&pm8916_l17>;	/* cam_vana 2.85V */
+		dvdd-supply = <&pm8916_l2>;	/* cam_vdig 1.20V */
+		dovdd-supply = <&pm8916_l6>;	/* cam_vio  1.80V */
+
+		powerdown-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;	/* SCAM_STANDBY: phys LOW=standby */
+		reset-gpios = <&tlmm 28 GPIO_ACTIVE_LOW>;	/* SCAM_RESET */
+
+		orientation = <0>;	/* front facing */
+		rotation = <270>;	/* downstream qcom,mount-angle */
+
+		port {
+			ov5693_ep: endpoint {
+				link-frequencies = /bits/ 64 <419200000>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+};
+
 &gpu {
 	status = "okay";
 };
