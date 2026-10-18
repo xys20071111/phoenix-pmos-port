@@ -396,8 +396,22 @@
 
 &blsp_i2c4 {
 	/* SMB358 charger (0x6A). Downstream i2c_4 = gpio14/15 = this bus.
-	 * Was invisible until now (bus never enabled): i2cdetect showed only
-	 * buses 0 (sensors) and 1 (touch). */
+	 * Basis for USB OTG (see otg/OTG.md): the mainline smb347 driver
+	 * registers the fixed-5V "usb-vbus" regulator from the child node
+	 * below and drives the SMB358 boost (CMD_A bit4) when the host role
+	 * starts; ci_hdrc does devm_regulator_get_optional(&usb, "vbus")
+	 * -> provider missing would EPROBE-DEFER the whole controller.
+	 * Charging config stays mostly factory: battery node gives no
+	 * charge-current/temp properties, the only real write is the float
+	 * voltage (4.35V -> nearest reg 4.34V, conservative). STAT pin is
+	 * reconfigured active-low for interrupt reporting, downstream used
+	 * <62 8> (level-low) accordingly — but this board's STAT pin sits
+	 * asserted LOW at idle: with LEVEL_LOW the TLMM re-fires the IRQ
+	 * for as long as the pinned run repeats (measured ~27/s while
+	 * idle). old read-only driver ran this line for weeks on
+	 * IRQ_TYPE_EDGE_BOTH without CPU churn (a held line counts once
+	 * with edge trigger). EDGE_BOTH is the trigger; the driver refreshes
+	 * its cached input state on every pass anyway. */
 	status = "okay";
 
 	smb358: charger@6a {
@@ -405,7 +419,18 @@
 		reg = <0x6a>;
 		interrupt-parent = <&tlmm>;
 		interrupts = <62 IRQ_TYPE_EDGE_BOTH>;
+		pinctrl-0 = <&smb_int_default>;
+		pinctrl-names = "default";
+
 		monitored-battery = <&battery>;
+		summit,enable-usb-charging;
+		usb_vbus: usb-vbus {
+			regulator-name = "usb_vbus";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+			regulator-min-microamp = <750000>;
+			regulator-max-microamp = <750000>;
+		};
 	};
 };
 
@@ -560,6 +585,10 @@
 
 &usb {
 	extcon = <&usb_id>, <&usb_id>;
+	/* SMB358 boost (CMD_A bit4) driven through the usb-vbus regulator
+	 * child of the charger node; the regulator_enable() call from
+	 * ci_hdrc host role is what starts OTG VBUS (5V/750mA). */
+	vbus-supply = <&usb_vbus>;
 	status = "okay";
 };
 
@@ -661,6 +690,13 @@
 		pins = "gpio110";
 		function = "gpio";
 		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	smb_int_default: smb-int-default-state {
+		pins = "gpio62";
+		function = "gpio";
+		drive-strength = <2>;
 		bias-pull-up;
 	};
 };

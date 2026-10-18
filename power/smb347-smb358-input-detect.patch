@@ -1,0 +1,87 @@
+--- a/drivers/power/supply/smb347-charger.c
++++ b/drivers/power/supply/smb347-charger.c
+@@ -85,11 +85,21 @@
+ #define CFG_TEMP_LIMIT_HARD_HOT_SHIFT		4
+ #define CFG_TEMP_LIMIT_HARD_COLD_MASK		0xc0
+ #define CFG_TEMP_LIMIT_HARD_COLD_SHIFT		6
++/*
++ * Architecture note (SMB358 vs SMB347): the SMB347 splits input
++ * undervoltage into STAT + IRQ bits inside IRQSTAT_E and has a DC-side
++ * UV enable. The SMB358 mounts the input-UV event on a single bit
++ * (IRQSTAT_E BIT0, driven by the live input comparator), and couples
++ * pin-level reporting to the INOK latch that is enabled from
++ * CFG_STATUS_IRQ BIT(2); without that enable, cable insertion never
++ * latches anything and the input state can not be re-detected.
++ */
+ #define CFG_FAULT_IRQ				0x0c
+ #define CFG_FAULT_IRQ_DCIN_UV			BIT(2)
+ #define CFG_STATUS_IRQ				0x0d
+ #define CFG_STATUS_IRQ_TERMINATION_OR_TAPER	BIT(4)
+ #define CFG_STATUS_IRQ_CHARGE_TIMEOUT		BIT(7)
++#define CFG_STATUS_IRQ_INOK			BIT(2)
+ #define CFG_ADDRESS				0x0e
+ 
+ /* Command registers */
+@@ -103,6 +113,7 @@
+ 
+ /* Interrupt Status registers */
+ #define IRQSTAT_A				0x35
++#define IRQSTAT_B				0x36
+ #define IRQSTAT_C				0x37
+ #define IRQSTAT_C_TERMINATION_STAT		BIT(0)
+ #define IRQSTAT_C_TERMINATION_IRQ		BIT(1)
+@@ -826,6 +837,32 @@
+ 	}
+ 
+ 	/*
++	 * SMB358 mounts the input-UV event on a single bit in IRQSTAT_E
++	 * (BIT0, driven by the live input comparator); the IRQ-latch bit
++	 * the check below waits for (IRQSTAT_E_USBIN_UV_IRQ) does not
++	 * exist, so the cached input state would never be refreshed.
++	 * Derive it directly on every interrupt instead. Latches in
++	 * IRQSTAT_A/B/F are never cleared by the remaining path and keep
++	 * the STAT pin asserted indefinitely; read them to acknowledge.
++	 */
++	if (smb->id == SMB358) {
++		bool usb_online = !(irqstat_e & IRQSTAT_E_USBIN_UV_STAT);
++		unsigned int dummy;
++
++		regmap_read(smb->regmap, IRQSTAT_A, &dummy);
++		regmap_read(smb->regmap, IRQSTAT_B, &dummy);
++		regmap_read(smb->regmap, IRQSTAT_F, &dummy);
++
++		if (usb_online != smb->usb_online) {
++			smb->usb_online = usb_online;
++			smb347_start_stop_charging(smb);
++			if (smb->use_usb)
++				power_supply_changed(smb->usb);
++		}
++		return IRQ_HANDLED;
++	}
++
++	/*
+ 	 * If we get charger error we report the error back to user.
+ 	 * If the error is recovered charging will resume again.
+ 	 */
+@@ -891,6 +928,11 @@
+ static int smb347_irq_set(struct smb347_charger *smb, bool enable)
+ {
+ 	int ret;
++	unsigned int status_irq_en = CFG_STATUS_IRQ_TERMINATION_OR_TAPER |
++				     CFG_STATUS_IRQ_CHARGE_TIMEOUT;
++
++	if (smb->id == SMB358)
++		status_irq_en |= CFG_STATUS_IRQ_INOK;
+ 
+ 	if (smb->irq_unsupported)
+ 		return 0;
+@@ -912,8 +954,7 @@
+ 		goto fail;
+ 
+ 	ret = regmap_update_bits(smb->regmap, CFG_STATUS_IRQ, 0xff,
+-			enable ? (CFG_STATUS_IRQ_TERMINATION_OR_TAPER |
+-					CFG_STATUS_IRQ_CHARGE_TIMEOUT) : 0);
++				 enable ? status_irq_en : 0);
+ 	if (ret < 0)
+ 		goto fail;
+ 
