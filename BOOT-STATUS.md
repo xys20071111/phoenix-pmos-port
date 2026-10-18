@@ -143,6 +143,17 @@
 - 验证: 插拔线 online/STATUS 跟着变, 桌面电池图标正常. lbc 已 disable.
 - 寄存器映射参考 Oculus Go 内核 smb358-charger.c (只借地址/位定义,
   驱动是重写的只读实现, 见 README 外部引用).
+- 2026-10-18: 上游 smb347 驱动接管 (USB OTG 依赖主线 usb-vbus regulator;
+  它与本驱动都匹配 summit,smb358, 二者必其一, 见 otg/OTG.md). r60 撤出
+  pmaports, 指示源变为 smb347-usb psy. 写入面: float 电压 (4.35V 节点值
+  -> 硬件档 4.34V, 偏保守) + CMD_A 充电开关 (同 OTP 自主充电路径),
+  FCC/温度限 battery 节点未给 -> 保持出厂. charger IRQ 改 LEVEL_LOW
+  (STAT 重配低有效). 蓄电池 phandle 名 smb358 不变, bms 引用不受影响.
+- 2026-10-18 (r61): r60 上机发现 online 卡在 probe 值 — SMB358 的
+  IRQSTAT_E 无 SMB347 式独立 IRQ 锁存位, 主线 handler 刷新门永不进.
+  `power/smb347-smb358-input-detect.patch`: live BIT0 推导 + INOK
+  锁存使能 (插线事件) + A/B/F read-ack (收敛 25/s 引脚风暴). 细节
+  与取证记录在 otg/OTG.md 的 r60 上机诊断一节.
 
 ## 耳机声道问题 (2026-10-14, 结论: 双声道混音, parked)
 - 现象: single-channel drive (-s1/-s2) 双耳同响; 静音/swap/mux 全套行为自洽地
@@ -316,3 +327,27 @@
   CS-Voice), 旧的 phoenix direct-LPASS 卡消失.
 - 包状态: kernel r46 (+bam-dmux patch), device r7 (+modem 用户空间链),
   firmware-lenovo-phoenix r1 (+modem 子包).
+
+## USB 双线打通: OTG host + RNDIS 自绑 (2026-10-18)
+
+细节全部在 `otg/OTG.md` (含完整破案记录). 概要:
+
+- OTG 死因: mainline smb347 hw_init 抹掉 OTP 配置的 CFG_OTHER[7:6]
+  (OTG-via-I2C-command), CMD_A OTG 位自首个主线启动起被静默忽略.
+  实弹改寄存器 → Stadia (18d1:9400) 首次枚举.
+- r66 probe 一次性臂位不够: 采样器实弹捕获芯片在 VBUS 下降沿自主把模式位
+  翻回 0b01 (PIN 死模式), regmap 缓存遮蔽物理漂移 (cache=0xa5 vs i2cget=0x65).
+- r67 (pkgrel=67, 构建 #68): probe 臂位 + regulator enable 重臂 +
+  CFG_OTHER 标 volatile. 插拔回归采样 404/404 全 0xa5.
+- OTG 全绿: Stadia 手柄 (完整 HID + stadia 驱动) 与 U盘 (usb-storage/scsi)
+  即插即用, 3 次插拔循环零错; -71 (EPROTO) 仅刷机后首启出现过一次, 未复现.
+- RNDIS 破案①: configfs 属性文件 stat.size 恒为 4096 → gadget.start
+  v1/v2 的 `[ -s ]` 守卫全是死代码, bind echo 从未执行; v4 用 read-back
+  作唯一判据, 开机自绑 bind-try i=0 rc=0 (/tmp/gadget.log 取证).
+- RNDIS 破案②: unudhcpd-openrc 默认 -s 172.16.41.1 -c 172.16.42.2 跨子网
+  = "No route to host"; 统一 pmOS 规范 172.16.42.0/24 (设备 .1/PC .2),
+  双向 ping 0% loss (~0.6 ms).
+- 包状态: kernel r67 (+smb347-smb358-otg-i2c-mode.patch v2), 新本地包
+  phoenix-usbgadget r3 (gadget.start v4 + unudhcpd.conf).
+- 前向兼容: phosh+systemd (usb-moded) 时代内核层全部沿用, 脚本让位 usb-moded
+  (网段约定一致); 详见 `otg/OTG.md` 前向兼容节.

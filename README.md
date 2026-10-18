@@ -8,8 +8,12 @@ Mainline Linux port of postmarketOS for the Lenovo PHAB Plus
 
 Working: display (NT35532 driver, ported init sequence), backlight/brightness,
 touchscreen (Goodix GT9xx), volume keys, hall sensor, vibrator, eMMC, SD slot,
-USB networking + SSH, battery voltage + percentage (OCV table) + charging
-indication (SMB358), accelerometer, WiFi (WCN3680, dual-band),
+USB networking + SSH (RNDIS gadget auto-bound at boot, pmOS-standard
+172.16.42.0/24 — see `usb/`), battery voltage + percentage (OCV table) +
+charging indication (SMB358), **USB OTG host mode** (SMB358 boost via the
+usb-vbus regulator; Stadia controller + flash drive enumerate, plug/unplug
+regression clean — 2026-10-18, see `otg/OTG.md`), accelerometer,
+WiFi (WCN3680, dual-band),
 GPU 3D (Adreno 405 / freedreno FD405), video decode (Venus H264), audio output (speaker mono + headphones dual-mono,
 desktop via UCM), **modem: SMS send/receive + SIM/IMEI/operator**
 (2026-10; see `MODEM.md`), poweroff/reboot.
@@ -18,7 +22,7 @@ Blocked (external, not our port): phone calls — this modem firmware has no
 VoLTE and CS voice is equally dead on stock/LineageOS; the whole Q6 voice
 chain (CS-Voice snd card, q6voiced) is wired up but unverifiable.
 
-Parked: USB OTG (see `otg/OTG.md`), light sensor (probes, reads zero),
+Parked: light sensor (probes, reads zero),
 microphone (capture link presents, function unverified), headset buttons
 (thresholds in, unverified), mobile data (bam-dmux netdevs exist, WDS/NM
 path unverified — see `MODEM.md`), GPS, camera,
@@ -36,9 +40,30 @@ magnetometer (no mainline driver).
 - `panel/panel-novatek-nt35532.kconfig` — Kconfig snippet.
 - `power/qcom-pon.c` — upstream qcom-pon + poweroff handler
   (programs PON shutdown type; stock mainline poweroff reboots this board).
+- `power/smb347-smb358-otg-i2c-mode.patch` — kernel patch (USB OTG):
+  mainline smb347 hw_init erases the OTP-configured CFG_OTHER[7:6]=0b10
+  (`OTG via I2C command`), so the CMD_A OTG bit was silently ignored since
+  the first mainline boot. Patch arms it after probe, re-arms on every
+  usb-vbus regulator enable, and marks CFG_OTHER volatile (the chip
+  self-flips the mode bits on VBUS drops; regmap cache must not mask it).
+- `power/smb347-smb358-input-detect.patch` — kernel patch: on the SMB358
+  input undervoltage is a single IRQSTAT_E bit + INOK latch
+  (`CFG_STATUS_IRQ` BIT2); without enabling it cable insertion is never
+  latched/re-detected. Read-only monitor `smb358-status.c` superseded by
+  the upstream smb347 driver at r60 (both matched `summit,smb358`).
+- `usb/gadget.start` + `usb/unudhcpd.conf` — rootfs-side RNDIS fix: waits
+  for the late ci_hdrc probe (initramfs one-shot misses it), assembles +
+  binds the configfs gadget with read-back verification (configfs
+  attribute files always stat 4096 — `[ -s ]` guards are dead code;
+  `/tmp/gadget.log` holds boot forensics), and pins the 172.16.42.1/24
+  subnet override for unudhcpd (stock unudhcpd-openrc defaults are
+  cross-subnet). Packaged as local-only `phoenix-usbgadget`
+  (see `BUILD.md` §7).
 - `power/smb358-status.c` + `power/smb358-status.kconfig` — read-only
   Summit SMB358 charger monitor (ONLINE/STATUS; never writes config).
-  Register map from the Oculus Go reference (see below).
+  Register map from the Oculus Go reference (see below). Superseded
+  2026-10-18 by the upstream smb347 driver — see the
+  `smb347-smb358-*` patch entries above.
 - `power/pm8916-bms-vm-fake-ocv-snap.patch` — snap fake_ocv down on fast
   discharge (else SoC strands high after unplug).
 - `audio/msm8916-audio-init.sh` + `audio/90-msm8916-audio.rules` — udev
