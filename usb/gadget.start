@@ -1,0 +1,65 @@
+#!/bin/sh
+# phoenix: assemble and bind the pmOS USB gadget once the UDC is ready.
+# Boot-time failure modes this script handles (evidence: otg/OTG.md):
+#  1. The initramfs one-shot skips when the UDC is late (vbus-supply
+#     defers the ci_hdrc probe behind the smb358 charger).
+#  2. A single bind echo touches a window where the UDC is listed in
+#     sysfs but the gadget core is not attach-ready yet (r66 first
+#     boot: assembled-but-unbound for the whole boot, a manual echo
+#     minutes later succeeded instantly). So: retries with read-back
+#     confirmation.
+#  3. configfs attribute files report size 4096 regardless of content:
+#     [ -s ] can NEVER tell state here (both v1 and v2 guards were
+#     dead code). The UDC attribute's READ-BACK is the only oracle.
+# Version v3 logs its path to /tmp/gadget.log for post-boot forensics.
+G=/sys/kernel/config/usb_gadget/g1
+LOG=/tmp/gadget.log
+
+log() { echo "$(date +%s) $*" >> "$LOG" 2>/dev/null; }
+
+log start
+
+# Phase 1: assemble the configfs gadget (needs no UDC, idempotent).
+if [ ! -d "$G" ]; then
+    log creating-gadget
+    mkdir -p "$G" || { log mkdir-failed; exit 0; }
+    echo 0x18D1 > "$G/idVendor"
+    echo 0xD001 > "$G/idProduct"
+    mkdir -p "$G/strings/0x409"
+    echo postmarketOS > "$G/strings/0x409/manufacturer"
+    echo phoenix > "$G/strings/0x409/product"
+    mkdir -p "$G/functions/rndis.usb0"
+    mkdir -p "$G/configs/c.1/strings/0x409"
+    echo "USB network" > "$G/configs/c.1/strings/0x409/configuration"
+    ln -s "$G/functions/rndis.usb0" "$G/configs/c.1"
+else
+    log gadget-exists
+fi
+
+# Phase 2+3: wait for a UDC, keep re-trying the bind until a read-back
+# of the UDC attribute equals the udc name (60 s window, 0.25 s steps).
+i=0
+udc=""
+bound=""
+while [ $i -lt 240 ]; do
+    udc=$(ls /sys/class/udc 2>/dev/null | head -1)
+    if [ -n "$udc" ] && [ "$(cat "$G/UDC" 2>/dev/null)" != "$udc" ]; then
+        echo "$udc" > "$G/UDC" 2>/dev/null
+        log "bind-try i=$i rc=$?"
+    fi
+    [ "$(cat "$G/UDC" 2>/dev/null)" = "$udc" ] && [ -n "$udc" ] && {
+        bound=yes
+        break
+    }
+    sleep 0.25
+    i=$((i + 1))
+done
+
+# Phase 4: network up (only meaningful once actually bound).
+[ -n "$bound" ] || { log bind-never; exit 0; }
+log bound-ok
+ip link set usb0 up 2>/dev/null
+ip addr add 172.16.42.1/24 dev usb0 2>/dev/null
+rc-service unudhcpd.usb0 restart 2>/dev/null
+log net-up
+exit 0

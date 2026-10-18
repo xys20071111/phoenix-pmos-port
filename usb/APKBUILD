@@ -1,0 +1,26 @@
+# Maintainer: phoenix port <dev@local>
+pkgname=phoenix-usbgadget
+pkgver=1
+pkgrel=0
+pkgdesc="Lenovo PHAB Plus (phoenix): assemble the pmOS USB RNDIS gadget once the UDC appears"
+url="https://postmarketos.org"
+arch="noarch"
+license="MIT"
+depends="unudhcpd"
+source="gadget.start"
+options="!check"
+
+package() {
+	install -Dm755 "$srcdir/gadget.start" \
+		"$pkgdir"/etc/local.d/gadget.start
+	# Make sure the OpenRC "local" service (which runs *.start in
+	# /etc/local.d) is enabled in the default runlevel. Shipping the
+	# symlink directly makes this deterministic; the post-install
+	# hook only covers it for idempotency on upgrades.
+	install -d "$pkgdir"/etc/runlevels/default
+	ln -s /etc/init.d/local "$pkgdir"/etc/runlevels/default/local
+}
+
+post_install() {
+	rc-update -q add local default || true
+}
