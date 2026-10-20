@@ -1623,3 +1623,34 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
   pix_cc_qfactor=2，并抓 dmesg violation/overflow。
 - 注意：BLC 启用后旧白平衡字 0x0173010E（含基底标定）需重标定；
   用户态 chroma offset 置 0。
+
+### 9.1 r79 设备轮结果：Stage-B 完整 ISP 在真机上跑通（kernel #77）🎉
+
+- **B0 回归**：`pix_full_isp=0` TP 帧与 r78 P1 **sha 完全相同**（`a218c923…`）
+  ⇒ 全 ISP 补丁未扰动 demux-only 路径。
+- **硬件 BLC 证实**（电子暗场：曝光 1/增益 1）：Stage-A `lin=1` 基座
+  Y/U/V `3.99/4.0/4.0 → 0/0/0`；全 ISP `full=3` 亦把色度基座 `V=132→128`
+  清零。TP 彩条不受 BLC 影响（`B2blc` sha == `B2`）——与预测一致。
+- **B1**（demux+demosaic+WB，无 CC/CE）：正常出帧、非黑，但过饱和（`interp=1`
+  几乎无改善）→ 说明 CC/CE（RGB→YUV 转换）是必需环节。
+- **B2**（+CC+chromaEnh/RGB→YUV = 模块字 0x08822814）：**TP 8 色全部命中真值**
+  白 (254.7,126.7,128.2)、黄、青、绿、品、红 (76.7,83.4,254.9)、蓝 (28.9,251.7,106.9)、
+  黑；**U≠V 8/8**（旧 `(B+R)/2` 签名彻底消失）、Y 明暗次序正确。
+- **真实场景（墙）**：B2 输出 **色度中性** `U=129.7 / V=130.6`（|U−V|=2.87），
+  对比 Stage-A 的横向色偏是质变。用标准 full-range BT.601 YCbCr→RGB 渲染，
+  TP 彩条/墙均正确 ⇒ **主线内核第一次输出真正彩色图像**。
+- **B2+BLC 的坑**：亮场景下 `full=3` 亮度 +47%、色度偏移（U142.6/V120.9）
+  → linearization 曲线在亮部改变色调平衡（stock 把 linearization 绑定在
+  digital gain/AGC 上）。**结论：BLC 默认关闭**（`pix_linearization=0` 已是默认），
+  保持为暗场/诊断工具；若将来启用需做曝光门控。
+- 过程事故（已修复并披露）：r79 首版脚本把所有 Stage-B 参数写 0，导致
+  `pix_wb_gain_*=0` / cc/ce=0 → 首轮 B1/B2 黑帧；脚本改为"未显式给出则不写、
+  恢复时写编译默认值"后重跑，以上结论均来自修复后的干净轮次。
+- 遗留/下一步：
+  1. **默认策略**：是否把 `pix_full_isp` 编译默认改为 2（B2）——需一次内核构建；
+     在此之前可由用户态在开流前写 `pix_full_isp=2`。
+  2. **AWB**：B2 后 demux gain 不应再用于 WB（会与 WB 模块双乘）；AWB 改为
+     用户态写 `pix_wb_gain_r/g/b`（9-bit Q7）；CC 目前固定 TL84，阳光场景可能需
+     D65 矩阵或自适应。
+  3. 真实场景/多光源取样与调参；13MP/HFR 档；AF/闪光灯。
+  4. 前摄 payload 数据面诊断（见 §8.7 更新）仍在并行。
