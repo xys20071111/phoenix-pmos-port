@@ -1,0 +1,203 @@
+--- a/drivers/media/platform/qcom/camss/camss-vfe-gen1.h
++++ b/drivers/media/platform/qcom/camss/camss-vfe-gen1.h
+@@ -47,6 +47,17 @@
+ 	void (*wm_frame_based)(struct vfe_device *vfe, u8 wm, u8 enable);
+ 	void (*wm_line_based)(struct vfe_device *vfe, u32 wm, struct v4l2_pix_format_mplane *pix,
+ 			      u8 plane, u32 enable);
++	/*
++	 * Configure a frame-based RDI write master to match the stock qcom
++	 * driver (msm_isp40): program the WR_BUFFER_CFG line geometry for
++	 * frame-based streams as well and, for the single active RDI write
++	 * master, hand it the entire image unbounded buffer. VFE4.1 write
++	 * masters end up skipping every second burst into the frame buffer
++	 * when either is left at the reset value. Optional: implementations
++	 * may leave this NULL when not applicable.
++	 */
++	void (*wm_set_frame_based_geometry)(struct vfe_device *vfe, u8 wm,
++					    const struct v4l2_pix_format_mplane *pix);
+ 	void (*wm_set_ub_cfg)(struct vfe_device *vfe, u8 wm, u16 offset, u16 depth);
+ 	void (*wm_set_subsample)(struct vfe_device *vfe, u8 wm);
+ 	void (*wm_set_framedrop_period)(struct vfe_device *vfe, u8 wm, u8 per);
+--- a/drivers/media/platform/qcom/camss/camss-vfe-gen1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-gen1.c
+@@ -244,6 +244,10 @@
+ 		vfe->ops_gen1->wm_set_ub_cfg(vfe, output->wm_idx[0],
+ 					    (ub_size + 1) * output->wm_idx[0], ub_size);
+ 		vfe->ops_gen1->wm_frame_based(vfe, output->wm_idx[0], 1);
++		if (vfe->ops_gen1->wm_set_frame_based_geometry)
++			vfe->ops_gen1->wm_set_frame_based_geometry(vfe,
++								   output->wm_idx[0],
++								   &line->video_out.active_fmt.fmt.pix_mp);
+ 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
+ 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
+ 	} else {
+--- a/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
+@@ -11,6 +11,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/of.h>
+ 
+ #include "camss.h"
+ #include "camss-vfe.h"
+@@ -128,6 +129,12 @@
+ #define VFE_0_BUS_BDG_QOS_CFG_7		0x2e0
+ #define VFE_0_BUS_BDG_QOS_CFG_7_CFG	0x0001aaa5
+ 
++#define VFE_0_BUS_DS_CFG_BASE		0x988	/* stock ds-regs, 17 entries */
++#define VFE_0_BUS_DS_CFG_VAL		0xcccc1111
++#define VFE_0_BUS_DS_CFG_LAST		0x9c8
++#define VFE_0_BUS_DS_CFG_LAST_VAL	0x00000103
++#define VFE_0_BUS_BDG_QOS_CFG_7_CFG	0x0001aaa5
++
+ #define VFE_0_RDI_CFG_x(x)		(0x2e8 + (0x4 * (x)))
+ #define VFE_0_RDI_CFG_x_RDI_STREAM_SEL_SHIFT	28
+ #define VFE_0_RDI_CFG_x_RDI_STREAM_SEL_MASK	(0xf << 28)
+@@ -368,6 +375,52 @@
+ 	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
+ }
+ 
++/*
++ * Frame-based write master geometry, mirroring the stock qcom msm_isp40
++ * driver: WR_BUFFER_CFG carries (8-byte groups per line << 16) |
++ * ((height - 1) << 4) | AXI burst length also for frame-based streams,
++ * and a single active RDI write master owns the entire image unbounded
++ * buffer (16-byte units; 1656 for msm8916, 2680 for msm8939). Leaving
++ * either register at its reset value makes the write master skip every
++ * second burst, ending up with every other 1 KiB block of the frame
++ * buffer missing.
++ */
++static void vfe_wm_set_frame_based_geometry(struct vfe_device *vfe, u8 wm,
++					    const struct v4l2_pix_format_mplane *pix)
++{
++	bool msm8939;
++	u16 wpl;
++	u32 ub_size;
++	u32 reg;
++
++	/*
++	 * The unbounded buffer size differs per SoC and is not in the main
++	 * resource tables; identify the SoC by the top-level CAMSS node
++	 * compatible.
++	 */
++	msm8939 = vfe->camss->dev && vfe->camss->dev->of_node &&
++		  of_device_is_compatible(vfe->camss->dev->of_node,
++					  "qcom,msm8939-camss");
++	ub_size = msm8939 ? 2680 : 1656;
++	writel_relaxed(ub_size - 1,
++		       vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_UB_CFG(wm));
++
++	switch (pix->pixelformat) {
++	case V4L2_PIX_FMT_SBGGR10P:
++	case V4L2_PIX_FMT_SGBRG10P:
++	case V4L2_PIX_FMT_SGRBG10P:
++	case V4L2_PIX_FMT_SRGGB10P:
++		wpl = (pix->width * 5 + 31) / 32;
++		break;
++	default:
++		return;
++	}
++
++	/* Burst length 3 matches the stock VFE40_BURST_LEN_8916_VERSION. */
++	reg = ((u32)wpl << 16) | ((u32)(pix->height - 1) << 4) | 0x3;
++	writel_relaxed(reg, vfe->base + VFE_0_BUS_IMAGE_MASTER_n_WR_BUFFER_CFG(wm));
++}
++
+ static void vfe_bus_reload_wm(struct vfe_device *vfe, u8 wm)
+ {
+ 	wmb();
+@@ -591,12 +644,57 @@
+ 	}
+ }
+ 
++/*
++ * Stock msm_vfe40_init_hardware_reg() programs three hand-over tables the
++ * mainline driver never touches: the bus bridge QOS remapper (0x2c4..0x2e0,
++ * 0xaaa5aaa5 / 0x0001aaa5), the DS (delay-share) table 0x988..0x9c8 and the
++ * VFE bus fabric ("VBIF") write-family configuration on the separate
++ * vfe0_vbif mapping (0x30 = 0xfff, 0x34 = 0x00555000; values from the
++ * msm8939-camera.dtsi qos/vbif/ds tables). With the fabric left at reset
++ * values the RDI write master loses every second burst into the frame
++ * buffer (measured: strictly 2048 B periodic holes, independent of all
++ * VFE write master registers). Idempotent, safe to re-run per power-on.
++ */
++static void vfe_configure_bus_fabric(struct vfe_device *vfe)
++{
++	int i;
++
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_0);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_1);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_2);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_3);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_4);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_5);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_0_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_6);
++	writel_relaxed(VFE_0_BUS_BDG_QOS_CFG_7_CFG,
++		       vfe->base + VFE_0_BUS_BDG_QOS_CFG_7);
++
++	for (i = VFE_0_BUS_DS_CFG_BASE; i <= VFE_0_BUS_DS_CFG_LAST - 4; i += 4)
++		writel_relaxed(VFE_0_BUS_DS_CFG_VAL, vfe->base + i);
++	writel_relaxed(VFE_0_BUS_DS_CFG_LAST_VAL,
++		       vfe->base + VFE_0_BUS_DS_CFG_LAST);
++
++	if (vfe->base_vbif) {
++		writel_relaxed(0x00000fff, vfe->base_vbif + 0x30);
++		writel_relaxed(0x00555000, vfe->base_vbif + 0x34);
++	}
++}
++
+ static void vfe_enable_irq_common(struct vfe_device *vfe)
+ {
+ 	u32 irq_en0 = VFE_0_IRQ_MASK_0_RESET_ACK;
+ 	u32 irq_en1 = VFE_0_IRQ_MASK_1_VIOLATION |
+ 		      VFE_0_IRQ_MASK_1_BUS_BDG_HALT_ACK;
+ 
++	vfe_configure_bus_fabric(vfe);
++
+ 	vfe_reg_set(vfe, VFE_0_IRQ_MASK_0, irq_en0);
+ 	vfe_reg_set(vfe, VFE_0_IRQ_MASK_1, irq_en1);
+ }
+@@ -977,6 +1075,7 @@
+ 	.set_xbar_cfg = vfe_set_xbar_cfg,
+ 	.wm_enable = vfe_wm_enable,
+ 	.wm_frame_based = vfe_wm_frame_based,
++	.wm_set_frame_based_geometry = vfe_wm_set_frame_based_geometry,
+ 	.wm_get_ping_pong_status = vfe_wm_get_ping_pong_status,
+ 	.wm_line_based = vfe_wm_line_based,
+ 	.wm_set_framedrop_pattern = vfe_wm_set_framedrop_pattern,
+--- a/drivers/media/platform/qcom/camss/camss-vfe.h
++++ b/drivers/media/platform/qcom/camss/camss-vfe.h
+@@ -140,6 +140,7 @@
+ 	struct camss *camss;
+ 	u8 id;
+ 	void __iomem *base;
++	void __iomem *base_vbif;
+ 	u32 irq;
+ 	char irq_name[30];
+ 	struct camss_clock *clock;
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -1530,6 +1530,15 @@
+ 		return PTR_ERR(vfe->base);
+ 	}
+ 
++	/*
++	 * The VFE bus fabric ("VBIF") mapping is optional and only present
++	 * on some SoC DTs; device without it keeps the reset fabric config.
++	 */
++	vfe->base_vbif = devm_platform_ioremap_resource_byname(pdev,
++							      "vfe0_vbif");
++	if (IS_ERR(vfe->base_vbif))
++		vfe->base_vbif = NULL;
++
+ 	/* Interrupt */
+ 
+ 	ret = platform_get_irq_byname(pdev, res->interrupt[0]);

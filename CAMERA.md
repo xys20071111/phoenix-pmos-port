@@ -26,20 +26,36 @@ AF / 闪光灯 / EEPROM 全部 defer: 不装驱动 VCM 停在机械零位
 
 ## 2. stock 输出配置 (从 sensor lib `.data` 解码, 小端)
 
-后摄唯一分档: **2112x1568**, line=2400, frame=3328,
-vt_pixel_clk=240MHz, op_pixel_clk=256MHz
--> 240M/(2400*3328) = 30.0fps. 另有一组全幅参数
-(vt=448M/op=480M, line=4512/frame=3328, crop 4208x3120),
-stock 未启用, 首版只做 2112x1568.
+**r61 勘误后终版** (decode2.txt, `/tmp/opencode/pbfw/ex/`, 全字段重验证):
+后摄 6 分档 (out_info_array + res_settings_array), lane 全部 **4 lane**
+(csi_lane_params {lane_assign 0x4320, lane_mask 0x1f, settle?, 0};
+0x3012=0x41 遍布全部 7 表; Mi8937 rolex 的 ov13850 XML 同值三方印证):
+
+| 模式 | 输出 | HTS×VTS | vt_pclk | op_pclk | max_fps | MIPI 位率/lane |
+|---|---|---|---|---|---|---|
+| m0 | 4208x3120 | 4512×3328 | 448M | 480M | 30 | 1.2 Gbps (link 600M) |
+| m1 | 2112x1568 | 2400×3328 | 240M | 256M | 30 | 640 Mbps (link 320M) |
+| m2 | 2104x1184 | 2400×3328 | 240M | 256M | 30 | 640 Mbps |
+| m3 | 1056x594 HFR60 | 2968×1348 | 240M | 240M | 60 | 600 Mbps (link 300M) |
+| m4 | 1056x594 HFR90 | 2968×898 | 240M | 240M | 90 | 600 Mbps |
+| m5 | 1056x594 HFR120 | 2968×674 | 240M | 240M | 120 | 600 Mbps |
+
+op_pixel_clk 语义 = MIPI 输出像素率 (bit/lane = op×10/4): m1 的 256M →
+640Mbps/lane 与 {m0 480M→1.2G, HFR 240M→600M} 三组全闭合; vt/op 差 =
+sensor 内部行周期时钟 vs CSI 发送时钟. 表内 AEC 种子: 3500-3502 = 
+{m1/m2: 0x006000 (1536 行), m0: 0x00C000 (3072), HFR: 0x0029A0 (666)},
+增益种子 350a/b=0x80. init_settings = {0103=1, delay 0x32} 单条 +
+217 表 (表首 0103=1 重复); stock group-hold 单例 {3208=0x10}/{3208=0xa0}
+(驱动首版未加, r62 后视撕裂补). slave_info: i2c 0x6c (8-bit) = 0x36/7bit.
+lens: f=3.68, f/2.2, hFOV 65.45°vFOV 50.65°.
+
+勘误记录: 前版 "2 lane @600Mbps/link 300M; 仅 2112x1568 一档; vt=448M/op=480M
+在老表里写成 449,581,056/481,644,544 等错值" 全部由 r61 全字段重解码取代
+(旧错 = 手工 u32 对齐位数不同, 0x3012 "stock=0x13" 的误读同批作废).
 
 前摄: **2592x1944**, line=2672, frame=1984.
 上游 ov5693 驱动自带该分档 (LINK 419.2MHz, PIXEL 167.68MHz,
 XVCLK 19.2MHz), 与 stock 行场参数同量级, 运行时复核.
-
-lane 数: 后摄 2112x1568 RAW10@30 = 993Mbps, 2 lane @600MHz DDR
-(1200Mbps) 刚好装下; 前摄 2592x1944 RAW10@30 = 1.51Gbps,
-2 lane @419.2MHz DDR (1.68Gbps) 装下. 结论: **都是 2 lane**,
-lane 顺序待运行时确认 (先按标准 `<0 1>` / camss 侧 `<0 2>`).
 
 ## 3. 上游驱动盘点 (内核 `v6.12.1-msm8916`)
 
@@ -448,6 +464,580 @@ Bayer: R/B 偏向 {176,178,2,179}; G 偏向 {172,173,1,174} (倾斜非分类)
   → P1 ctrl1=0xF → P5 VBIF=0xfff/0x555000 → P6 DS=0xCCCC1111… → P7 csiphy 扫。
   P3-P6 经 qmmio 中流写，风险=流挂则 reboot；P1 同类注意。
 
+### r61 stock 全表 verbatim 实施 + 4-lane DTS（纯离线完成，待设备验证）
+
+- **触发**：用户指示「开始实施」，采用 r60 前定案的 rework 方案
+  （verbatim stock 表 + 4-lane DTS），实施前全部先经离线复核。
+- **mainline 4-lane 可行性锤定**（免改 camss patch 的依据）：
+  1. `camss-csiphy-2ph-1-0.c`：`csiphy_get_lane_mask = 1<<pos 逐 lane | CLK`，
+     `lanes_enable` 按 data_lanes 逐 lane 写 LNn_CFG2/CFG3，**无 lane 数上限**；
+     寄存器窗口 0x200 覆盖 LN4（0x104）。
+  2. `camss-csid-4-1.c`：`lane_cnt-1 | lane_assign<<4`，nibble 直通，无校验拦截；
+     `csid_get_lane_assign |= data[i].pos<<(i*4)` 与 stock 0x4320 编码同构。
+  3. `v4l2-fwnode.c`(v6.12) CSI2 解析只查重复、无 lane 值上限（数组 8 槽），
+     `<0 2 3 4>` 全链路合法。
+  4. stock 8916/8939 camera dtsi 同地址同 compatible（csiphy-v3.1@1b0ac00），
+     同代 PHY 硬件 4-lane 有出厂背书（m0 = 1.2Gbps/lane）。
+  结论：**camss patch 零改动**，纯 DTS 表达。
+- **link-freq 基准锤定**：out_info vt/op 全字段重解析（脚本），
+  m0 vt=448M/op=480M、m1/m2 240M/256M、HFR 240M/240M（此前 449,581,056
+  等 = 手工 u32 错值，作废）。op×10/4 = 每 lane 位率：1.2G/640M/600M，
+  DDR link = 600/320/300 MHz，三组闭合（m3 240M/2968×1348/60fps 自洽）。
+  settle 由 sensor 的 V4L2_CID_LINK_FREQ 运行时取（csiphy ep 无需 link-freq）。
+- **`camera/ov13850.c` 重写**（995→1236 行）：
+  - 7 表全部 verbatim（2107 条寄存器，脚本提取零转写）：
+    init 217（首条 0103=01 重申单例）+ m0 249 + m1/m2 241 + m3/m4/m5 240；
+    边界对拍全部严丝合缝（init 止于 m3 首、m4 止于 out_info、m0 止于 0x6124）。
+  - 模式表 = stock res_settings_array 顺序重排：m1(默认)/m2/m0/m3/m4/m5，
+    附 hts/vts/pclk/link_freq_idx/行数 exp_def（表内 AEC 种子 >>4：
+    1536/1536/3072/666）与 regs/nregs 指回 verbatim 表。
+  - 控制：LINK_FREQ 三项 int-menu + PIXEL_RATE per-mode（set_fmt 时
+    `__v4l2_ctrl_s_ctrl` 同步 → csiphy settle/VFE floor 随模式走）；
+    hblank 随模式 [hb,hb] 锁定（不再 read-only 旗标 + s_ctrl 直写路径）。
+  - init 流程补 stock 语义：`0103=0x01` 单例 + 50ms（wrapper delay 0x32）
+    再进 217 表；group-hold {3208=0x10}/{0xa0} 单例**暂不加**（stock 内核
+    不处理 group，由 userspace daemon 负责，语义存疑，列 r62 后实验项）。
+  - detect() 2.5s 重试窗保留（reg 0x36 现有 stock slave_info 0x6c/8-bit 背书）。
+  - 顺手修 r54 期潜伏 bug：s_stream STOP 分支与 sensor_init 的
+    `cci_write(..., &ret)` 在 `ret` 未初始化时传入 —— v4l2-cci 读 `*err`
+    非零即**静默跳过写入**（乱码栈值）。两处 `ret = 0` 后再传。
+- **DTS**：csiphy0_ep `data-lanes=<0 2 3 4>`（=stock 0x4320 同构）、
+  ov13850_ep `data-lanes=<1 2 3 4>` + link-frequencies 三值全列；
+  reg 0x36 注释升级为 stock slave_info 佐证。BUILD.md r61 行同步。
+- **离线验证**：表内抽查 380c/d/e（HTS/VTS）、3012=0x41 全表、
+  4601/4603/4837 三族（init族/m0/HFR族各就位）、连续重复写条数与 blob 一致
+  （init 1/m1 13/m0 21）。证据已回拉持久库：`camera-ref/ov13850-stdlib/`
+  （ex/ = blob+decode2.txt+stock_tables.c+chromatix 库，headers/ = 结构头；
+  /tmp 侧 1.6G 系统镜像不回拉，提取物即证据本体）。
+- **r61 设备轮（待用户 go-ahead）**：刷入后 (a) i2c 寄存器 dump vs stock 表
+  逐条对拍（发给 0x36/7bit，流关闭态）；(b) m1 2112x1568@30 首流出帧
+  （link 320M、4 lane、settle 自动），像素内容 vs r55-r59 损毁签名。
+- **r62 展望**：若 m1 干净 → HFR/m0 逐档点亮 + VFE P3-P7 poke 复核；
+  若仍损毁 → 损毁源锁定数字路径（P3 BUFFER_CFG 优先级不变）。
+
+### r61 设备轮（已执行）：init 对拍达标、首流出帧、损毁根因=WR_BUFFER_CFG 缺写
+
+- **内核 #69 部署**（用户手build+side-load；`uname -v`=#69 SMP PREEMPT
+  Oct 19 05:19:10 2026）：probe 日志 `ov13850 3-0036: OV13850 rev 0xb2 detected`。
+- **目标 (a) 状态对拍 ≡ 达标**：probe 态 i2c dump（216 条去重）vs stock init 表
+  **215/216 全同**，唯一差 `0x0103`（软复位自清位，预期内）。
+- **设备工具链**：apk 装 `v4l-utils`+`python3`（tsinghua edge 镜像可达）；
+  `media-ctl` 无 Alpine 包 → python3 ioctl 等价物（链接+subdev fmt，
+  ABI 值以宿主 linux-libc-dev C 探针锤定：IOC_ENUM_ENTITIES=0xc1007c01、
+  SETUP_LINK=0xc0347c03、SUBDEV_S_FMT=0xc0585605；entity_desc 256B，
+  dev major/minor 在 off72/76；link_desc 52B flags@40）。
+  实体 ID 稀疏（csiphy0=1/csid0=7/ispif0=25/vfe0_rdi0=31/sensor≈96|190，
+  随 boot 漂移，python poll 等 bind~0.4s）。/dev/v4l-subdev 由 entity maj/minor
+  readlink 解析（v4l-subdev0..11）。
+- **DT 运行时复核**：/proc/device-tree 里 rear csiphy0 ep `data-lanes=<0 2 3 4>`
+  生效（r61 DTS 活体）；/boot dtb 含 data-lanes 块 ✓。
+- **目标 (b) 首流出帧 = 管线级达标**：csiphy0→csid0→ispif0→vfe0_rdi0（3 链接、
+  全链 SBGGR10_1X10/2112x1568、/dev/video0 pBAA），
+  32 帧 @**30.04fps**、/tmp/L61a.raw=132,464,640B=精确 32×(2112×1568×1.25)
+  pBAA 几何；流后 i2c m1 态 dump **227/228** —— 唯一差 `0x350b`
+  （AGC 实时增益 0x80→0x10=1.0x，传感器 AEC 硬件活体证据，非偏差）。
+- **像素级判定 = 仍损毁（新签名，区别于 r55-59）**：
+  - 恰好 **50.08% 字节恒零**（32/64 帧零占比恒定 0.500-0.501/persistent），
+    列向均匀、4px 相位均匀；有效数据呈 **「写 1KB / 跳 1KB」2KB 周期交替**，
+    逐行相位漂移（边界步进 -592/+432 交替，净 -160B/2行 ≈ -80B/行）；
+    row4 ≡ row0 平移 -320B（已验证）。
+    非零半区解包后为离散值簇（0/4/5/16/20/64/80/260/261/544…，
+    与 r55-59 的 11 值 bit6/8/9 卡 0 签名**不同**）。
+  - 证据：`camera-ref/frames/r61/`（L61a.raw+L61b.raw+sha256+dumps+
+    r61g_regs.txt 本轮寄存器 dump）。
+- **活体寄存器（r61g 中流 /dev/mem mmap 读，r61g_out.txt 已归档）**：
+  - CSID0：CORE_CTRL_0=0x00043203（**lane_assign 0x432 直通 ✓ 4-lane 生效**）、
+    CID_0_CFG=0x23（DECODE_FMT=2 即 UNCOMP_10BIT|ISPIF|RDI ✓）、TG 灭；
+    IRQ_STATUS=0xdd（流活跃中断在跳）。
+  - CSIPHY0：5 个 lane 块同值（CFG2=0x10/CFG3=0x0b/settle 相同一套）✓。
+  - VFE0：wm0 WR_CFG=0x3（enable+**frame-based**）、UB_CFG=0x155
+    （=1023/3 depth+0 offset，与主线 gen1 公式精确一致）、
+    PING/PONG=0xff400000/0xff800000、WR_IRQ_SUB=0xffffffff、
+    **WR_IMAGE_SIZE=0x00000000、WR_BUFFER_CFG=0x00000000** ←← 损毁直因。
+- **根因（stock 内核实锤闭合）**：stock `msm_isp40.c axi_cfg_wm_reg` 的
+  **frame-based 分支同样写 WR_BUFFER_CFG** = `wpl(fmt,width)<<16 | (h-1)<<4 |
+  burst_len`（8916/8939 burst=3），clear 路径亦有清零；主线
+  `vfe_wm_frame_based()` 只置 WR_CFG bit1，**从不写 +0x18** → 写主控
+  以 0 几何跑 → 每个 2KB 窗丢一半 burst（1KB 空块交替）。
+  - **r60 备忘更正**：0x029461F3 是按 4B 字的错误推导，**从未被 poke**（幸）；
+    寄存器 [31:16] 实为 **8B 组/行**，stock 公式 `CAL_WORD(width,5,32)`
+    等价 (w×10/8)/8 组 → 2112px = **330** → 正确目标值
+    **0x014A61F3**（330<<16 | 1567<<4 | 3）。
+  - 顺带发现：主线 `vfe_word_per_line()` 只认 NV/YUYV，RAW 一律返回 0
+    （PIX 路径另一坑，本补丁未触碰）。
+- **修复（已落盘待用户构建）**：`camss/camss-vfe41-frame-based-geometry.patch`
+  （repo 为主本，pmaports 已接线+sha512+pkgrel 68→69）：
+  gen1 ops 增**可选** op `wm_set_frame_geometry`，仅 vfe-4-1 实现
+  （SBGGR10P 族 → wpl=(w*5+31)/32; reg=wpl<<16|(h-1)<<4|3），
+  vfe-gen1.c RDI 分支在 wm_frame_based 后**判空调用**；4-7/4-8 不受影响。
+  补丁对 pristine camss 副本 patch -p1 干净通过（内容 diff 复核一致）。
+- **事故记录（3 次相关 reboot）**：
+  - r61e/f 连挂：根因 = **camss MMIO 在 runtime-suspend（时钟关）时
+    裸读 → 总线 fault panic**（post-stop 读取直致，pstore 无 ramoops 可查）。
+    **规则（铁律）**：camss MMIO 只允许**中流**读（r61g 中流读全程无害）；
+    停流/未 bind 态禁读。
+  - r61e/f 还误用了旧版 mediasetup.b64（无 readlink 解析、对 media0 打
+    subdev ioctl → ENOTTY + v4l2-ctl 空流 hang）；mediasetup.b64 已重写为
+    正确版（wait-loop + readlink 解析）并持久化。
+  - busybox **无 devmem applet**；/dev/mem 需 sudo；qmmio 已从内核移除，
+    MMIO 通道 = python3 mmap /dev/mem（中流态）。
+- **r62 计划兑现**：用户构建 pkgrel=69（build #70）刷入后 16-32 帧复测——
+  mid-stream 读回 WR_BUFFER_CFG 期望 **0x014A61F3**（wm0 +0x84）；
+  帧期望：1KB 空块消失、真实图像内容（Bayer 噪声+非零连续分布）。
+  通过 → 按原计划 HFR/m0 推进（点亮 13MP m0 时对 VFE410 带宽保持观察）。
+
+### r62 设备轮（已执行）：几何寄存器已生效（读回 0x014A61F3 一字不差），但损毁签名不变 → 头号嫌疑转为 UB 深度差 8×
+
+- **内核 #70 部署**（用户手 build+side-load；`uname -v`=#70 SMP PREEMPT
+  Oct 19 08:24:36 2026）。
+- **r62a 全流程一次通过**（正确版 mediasetup + 32 帧 + 中流 MMIO 读）：
+  `/tmp/L62a.raw` = 132,464,640B = 精确 32 帧几何，**30.05fps**，
+  sha256 `7887df18…c45c09b`，pull 至 `camera-ref/frames/r62/`
+  （含 r62a_regs.txt 全寄存器 dump）。
+- **活体寄存器（中流）**：VFE wm0 `WR_BUFFER_CFG(+0x84)=0x014a61f3` ✅
+  （=330 组/行 | 1567 | burst 3，与推算完全一致 → v1 补丁逻辑生效）；
+  `WR_IMAGE_SIZE(+0x80)=0`（stock 帧基模式同样不写，符合设计）；
+  `WR_CFG=0x3`、`WR_IRQ_SUB=0xffffffff`；
+  **UB_CFG 仍=0x155**（341 组，v1 未触碰）；PING/PONG=0xffc00000/0xff000000
+  （4MB-slot 池，12MB 间隔，正常）。
+- **像素级判定 = 损毁签名不变（与 L61a 完全同构）**：
+  - 零占比仍 ~50.08%/帧恒定；row-profile 自相关 **7 行周期 0.983** 不变；
+    逐行边界序列与 L61a 同步（1024,432,…，净 −80B/行）；
+    f0 vs f1 零掩码匹配 0.9983（**按 buffer 确定性重放**，与内容无关）。
+  - 结构解码成立：写主控真实行 stride = **2560B**（= 2640−80，逐行相位漂移
+    −80B/行 与 (330−320)×8 吻合），即主控未按我们写的 330×8=2640 走——
+    **WR_BUFFER_CFG 值（0 或 0x014A61F3）都不改变其行为** → 该寄存器是
+    必要条件之一但非充分。
+  - 载荷字节谱变脸（L61a: 0x04+0x05 主导；L62a: 0x04 主导 1.65M +
+    位交替族 0x55/0x66/0x56/0x65/0x95/0x99/0xaa @10-31K）→ 内容位图
+    在跳写路径上确实随景物/曝光变化（活数据），结构骨架恒定。
+- **根因修正（头号嫌疑 = r60 清单 P2）**：stock `msm_isp40.c` 实锤——
+  `VFE40_UB_SIZE_8939=3072 / _8916=2048`（**16B 单位**）；
+  `VFE40_TOTAL_WM_UB_8939=2680`（8916=1656）；单活动流时
+  `cfg_axi_ub_equal_default` 把 `min_wm_ub+全部 prop` 全部给该 WM →
+  寄存器值 = `0<<16 | (2680-1)` = **0xA77**（与 r60 备忘值精确吻合）；
+  wm_base 同主线（0x6C+0x24×i，UB 在 +0x10）。主线 gen1 给 RDI
+  `get_ub_size()/3 = 341` → **深度差 7.9×**。r62 证明仅几何位补足不够；
+  UB 环过浅 + 高像素率下主控丢 burst 为当前最优解释（实验待证）。
+- **修复 v2（已落盘待构建）**：op 更名 `wm_set_frame_based_geometry`
+  （gen1.h/gen1.c/4-1.c 同步更名），函数内新增 **UB 全额分配**：
+  以顶层 camss compatible 判 SoC（设备 DT 已验证：camss 顶层=
+  `/proc/device-tree/soc@0/isp@1b0ac00`，compatible=`qcom,msm8939-camss`），
+  8939→写 `2679`、其余（8916）→`1655`（offset 0，仅 RDI 分支调用，
+  不触碰 PIX 路径）。patch -p1 对 pristine 干净通过 + b 树逐字节一致。
+  pmaports：sha512 `e7fc8844…3e51`、pkgrel 69→**70**。
+- **事故记录**：无（全程无 reboot；devssh 引号坑 2 次小抓狂，base64 推送惯例化解）。
+- **r63 计划**：用户构建 pkgrel=70（build #71）刷入后**同 r62a 菜单**——
+  mid-stream 期望 `UB_CFG=0x00000A77` 且 `WR_BUFFER_CFG=0x014A61F3` 双证；
+  帧判定：若零占比 ≪50%、1KB 空块消失 → UB 根因坐实，进入 HFR/m0 阶梯；
+  若仍漂移 → stride 之谜续破，备选实验=CSID TG 测试图发生器。
+
+### r63 设备轮（已执行）：UB 全额分配生效（0x00000A77 读回）但签名不变 → 骨架测量实锤「线性 2KB 周期跳写、行结构完全无关」
+
+- **内核 #71 部署**（uname -v = #71 SMP PREEMPT Oct 19 08:54:32 2026）。
+- **r63a 一次通过**：复用 r62a 菜单（reuse 脚本尾巴 echo R62A_DONE，文件名
+  L62a 拉回后归档为 L63a）；132,464,640B、**30.60fps**、
+  sha256 `46926275…a81a11` → `camera-ref/frames/r63/`（含 r63a_regs.txt）。
+- **mid-stream 双证**：`UB_CFG(+0x7c)=0x00000A77` ✅（stock 单流全额、
+  v2 补丁按 compatible=msm8939 分支正确走 2679）+
+  `WR_BUFFER_CFG(+0x84)=0x014a61f3` ✅；`WR_IMAGE_SIZE=0`、
+  `WR_IRQ_SUB=0xffffffff` 不变。
+- **像素判定：签名纹丝不动**（与 L61a/L62a 同构）：零占比 0.501/帧、
+  7 行自相关 0.983、前导边界序列逐项相同。
+- **【重要修正 r62 结论】跳过骨架的线坐标周期测量（32 帧聚合零占比，
+  骨架=全帧恒零位 = 0.5000 整）**：候选周期扫描 P=1024..8192，
+  **P=2048 偏差 = 0.0000**（4096/6144/8192 同因其倍数），其余全部 ~0.49。
+  → 写主控沿**线性 DDR 流每写 1KB 跳 1KB**；r62 的「master stride 2560B、
+  −80B/行漂移、(330−320)×8 数理」全是 2640≈2048/2053 行混叠造成的假象，
+  **没有任何行周期成分**。WM 寄存器全组（几何/UB/anything）对该行为零影响。
+- **证据等级重排**：丢弃点在寄存器不可见的实体侧。两大模型族不可由缓冲
+  内容区分（写位置/内容在「UB 丢段」vs「上游只送偶数 KB」两种叙事下
+  观测等价）→ 判别必须靠**行为实验**（换源/换速率/换 lane 数/TG）。
+- **事故**：无 reboot；devssh 引号坑 ×1（grep 管道组合取舍，base64 惯例化解）。
+
+### MMIO 白名单（铁律 v2，r64a 事故后固化）
+
+- **r64a 事故（设备 reboot ×1）**：扩展 dump 越孔径——
+  ① ISPIF 基址抄错：读 `0x1b02000` 系（8939 ISPIF 实际在 `0x1b0a000`）；
+  ② CSID dump 超长：`csid0` reg 映射仅 **0x100B**（DTS 实测），我读 0x120
+  dwords=0x480B 越界。无映射地址 = NoC fault = panic：机理与 r61
+  runtime-suspend 读同族（都是裸读器件/总线的不可见态）。
+- **白名单（= 8939 DTS reg 表 verbatim，中流只许读这些）**：
+  | 器件 | base | len（DTS） |
+  | csiphy0 | 0x1b0ac00 | 0x200 |
+  | csiphy0_clk_mux | 0x1b00030 | 0x4 |
+  | csiphy1 | 0x1b0b000 | 0x200 |
+  | csid0 | 0x1b08000 | **0x100** |
+  | csid1 | 0x1b08400 | 0x100 |
+  | **ispif** | **0x1b0a000** | 0x500 |
+  | csi_clk_mux | 0x1b00020 | 0x10 |
+  | vfe0 | 0x1b10000 | 0x1000 |
+  | csid2 | 0x1b08800 | 0x100 |
+  | vfe0_vbif | 0x1b40000 | 0x200 |
+- 规则：任何 dump 的 (base, n×4) 必须 ⊆ 表内孔径；表外一律禁读（含
+  「应该是同一块」的猜测地址）；写寄存器默认亦限流内且按轮另行评估。
+
+### r64 设备轮（已执行，两段）：ISPIF 首采证（正确基址、无事故）+ VBIF/QOS 织物层实锤复位默认值 → 补丁 v3 = stock 织物三表
+
+- **r64b**（ISPIF 修正基址后首跑，全程干净）：L64b = 132MB、29.08fps、
+  sha `9b221dde…f61bcd`；骨架同 P=2048 但**与 r61-r63 相位翻转**
+  （此轮 [0,1024) 写满 / [1024,2048) 全零；r64b PING=0xff400000 与 r61 同址，
+  相位与 buffer 地址无关 → 跳相为本会话流启动瞬态，跨轮轮转）。
+  `frames/r64/`（L64b.raw + r64b/r64c_regs.txt）。
+- **ISPIF（0x1b0a000）中流值**：CTRL_0=0（PIX0_LINE_BUF_EN 未置，RDI 无关）、
+  IRQ_MASK_0=0x0a492000、IRQ_STATUS_0=0x8000（bit15 活跃）、
+  INTF_INPUT_SEL=0、INTF_CMD_0=0xfffffdff、CID_MASK 组=0——无行宽/块宽型
+  寄存器，ISPIF 自身无列级可调项 → 非头号嫌疑。
+- **r64c（织物层窗户纸捅破）**：
+  - VFE **BUS_BDG_QOS 0x2c4-0x2e0**：主线**定义了 0xaaa5aaa5 常量却从不写**；
+    stock 8939 DT = 0xAAA5AAA5×7 + 0x2e0=0x0001AAA5（qos-regs 表）。
+  - **DS 表 0x988-0x9c8**（stock `ds-settings`=0xCCCC1111×16 + 0x103）：live
+    全 0x11111111/0。
+  - **VBIF（vfe0_vbif=0x1b40000）**：`0x30`、`0x34` live=0/0，stock 写
+    `0x00000fff / 0x00555000`（vbif-regs/settings）。
+  - 注：stock `vfe_base+0x30/0x34` 是 TOP IRQ 清除组，与 VBIF+0x30/0x34
+    完全两码事（不同基数）。
+  - 织物层的 IN_WR_LIM_CONF0/1/2（0xC0-0xC8）live=0x10/0x10100000/0x101000、
+    DDR_OUT_MAX_BURST(0xD8)=0x707、ARB_CTL(0xF0)=0x30——stock 8916/8939
+    不写这些（除 DT 两表），维持不动。
+- **补丁 v3（r64 收尾产物，待构建）**：
+  1. `vfe_configure_bus_fabric`（4-1.c）：QOS 八组 + DS 十七组 + VBIF
+     0x30/0x34，**全 stock verbatim**，挂在 `vfe_enable_irq_common`
+     （幂等，每 power-on 跑）。
+  2. `struct vfe_device` 增 `void __iomem *base_vbif`；
+     `msm_vfe_subdev_init` 里可选映射 `vfe0_vbif`（byname 失败即 NULL，
+     上游 8916 DT 无此 reg 亦安然跳过）。
+  3. 补丁现覆盖 5 文件（gen1.h/gen1.c/4-1.c/vfe.h/vfe.c），
+     patch -p1 + 五文件 b 树一致验证 ✓；sha512 `f6c94a19…f17d10`、
+     pkgrel 70→**71**。
+- **r65（下一轮）**：用户构建 pkgrel=71（build #72）→ 同菜单捕 32 帧 +
+  mid-stream 加读 QOS 0x2c4-0x2e0 + VBIF 0x30/0x34（白名单内）三证库存值；
+  帧判定入口不变（零占比骤降 = 坐实织物根因；不变 = 转 E-lane/E-rate
+  行为实验，织物层 parity 即告完成）。
+
+### r65 设备轮（已执行）：🎉 半损坏终局——织物层 stock 对拍后出图，根因链收官
+
+- **内核 #72（pkgrel=71）部署**（uname -v = #72 SMP PREEMPT
+  Oct 19 09:46:09 2026）。
+- **织物三证读回全部命中 stock 值**（v3 补丁按设计生效）：
+  - BUS_BDG_QOS 0x2c4/8×4：`0xAAA5AAA5×7 + 0x0001AAA5`（此前 live 全 0 重置）；
+  - DS 表 0x988..：`0xCCCC1111…`（此前 0x11111111）；
+  - VBIF 0x30/0x34：`0x00000fff / 0x00555000`（此前 0/0）。
+  WM 双证维持（UB=0x00000A77、WB=0x014A61F3）。
+- **🎉 帧判定：完好**（L65a 32 帧、30.05fps、sha `6d1daf19…f1ade0`）：
+  - 零占比 **0.0021-0.0027/帧**（r61-r63 恒 0.5009）→ 1KB/2KB 跳写消失；
+  - P=2048 骨架两半 = 0.0023/0.0023，周期性彻底瓦解；
+  - 像素层（MIPI 顺序解包 MSB 对齐 RAW10）：**零像素 = 0.0**，
+    min/max/mean = 13/35/21.32 ——暗场景量化带合理（手机镜头朝下）；
+  - **拜耳 2×2 网格 = 真传感器结构**：EE/OE = 20.97/22.39、
+    EO/OO = 22.39/19.53——G 双通道相等 + R/B 微差，完全是 Bayer 特征
+    （若有错位/半帧伪迹不会出现此对称结构）；
+  - 帧间差 0.341-0.344（暗噪主导的活流，帧间继续变化）✓；
+    全程帧均值 27.9±0.1（AEC 稳定）✓；字节 0-255 全谱 ✓。
+- **根因链收官（交付）**：阶段一 = WR_BUFFER_CFG 缺写（主线 gen1 从不写
+  帧基几何）+ UB 深度缺（主线 341 vs stock 2680）+ **织物三表缺**
+  （QOS/DS/VBIF 全复位默认）——三者全部由
+  `camss-vfe41-frame-based-geometry.patch`（v3，pkgrel 71）补齐后
+  首次出图。修复现覆盖 5 文件，repo+ pmaports 双接线完成。
+- **证据**：`camera-ref/frames/r65/`（L65a.raw + r65a_regs.txt 织物三组
+  活体值 + L65a_f0_gray.png 初渲染）。
+- **r66（下一轮，预置）**：**实拍验证轮**——请用户举起机器对准明亮
+  纹理景物（点屏/灯/室温良好光）捕 16 帧；工作站渲染 PNG + Bayer 均衡
+  通道统计 + 期望可见景物。通过 → HFR 模式阶梯（m3-m4）→ 13MP m0
+  （观察 VFE410 带宽）→ AF/闪光灯二期。
+
+### r66 设备轮（已执行）：🎉 ov13850 主线内核首张真实影像——管线验证全线闭环
+
+- 用户将镜头对准笔电屏幕后捕获 L66a（16 帧、30fps、sha
+  `08510f6f…8b9a4`、16×4,139,520B 精确、零占比 0.002 全绿、活流差 0.31）。
+- **工作站渲染 + 人眼判定 = 实景照片**（`frames/r66/L66a_f0_auto.png`，
+  工作站/agent 均已入眼看图）：笔电（A 面发光 logo、屏幕面板边框、
+  键盘按键阵列、屏幕反光斜条）、浅色桌面、左上深色物体。像素 min/max/
+  mean = 12/55/19.96（AEC 压暗目标），1%/99% 百分位拉伸（16→28）后
+  内容全显。
+- **判读教训（记入方法论）**：byte-mean ≠ 亮度判定；10-bit 数据占量程
+  ~2-4% 时一律用百分位拉伸再判——r65 的「暗场景合理」判断正确但
+  r66a 一度误读为「无内容」，渲染取证后修正。
+- **fb 预览脚本（用户提议，r67a 已验证管线跑通 24 帧 0 掉帧）但屏幕
+  不可见**：根因 = 桌面合成器 60fps 整屏重绘覆盖 /dev/fb0 写入
+  （存活 <16ms）。可修复方案（备选，未实施）= 渲染窗口期
+  `kill -STOP` 合成器 + 渲染 + `kill -CONT`。此路非验证必经。
+- **根本交付态**：后摄 ov13850 m1（2112×1568 RAW10@30fps）在主线
+  6.12 + v3 补丁下**出真实影像**；修复三件套（帧基几何+UB 全额+
+  织物三表 QOS/DS/VBIF）全部由
+  `camss-vfe41-frame-based-geometry.patch`（pkgrel 71，5 文件）承担，
+  pmaports 接线完成，repo 侧文件亦为最新。阶段 4a（RDI m1）= 完成。
+- **后续阶梯**：HFR 模式（2-lane 高帧率档）、13MP m0 全幅（VFE410
+  带宽观察）、前摄 ov5693 同法验证；彩色成片 = userspace（libcamera/
+ ()<<" Bayer 解插值+AWB）范畴，内核侧不受此限。
+
+### r68 设备轮（已执行）：前摄链两大拦路虎拔除——media 工具链自研打通 + CSID1 上电根因修复（pkgrel 72，待用户重编内核）
+
+- **r68a 首试现象**：链路设置 csiphy1→csid1 / csid1→ispif1 均 OK，
+  `ispif1→vfe0_rdi0` enable 报 **-EBUSY**；流挂死 0 字节；ssh 超时
+  （诱因之一 = 脚本里 `--list-formats-ext` 在 pBAA 节点上做 1×1-8191
+  连续枚举，永不结束——**以后禁用该参数**）。
+- **EBUSY 真因（对照实验定位）**：r68a 挂死的 v4l2-ctl 变成
+  **D 状态不可杀进程**，持有 video0 的 media pipeline；
+  `media_pad_is_streaming(sink)` → 链路 setup 恒 -EBUSY，
+  S_FMT/REQBUFS 也 busy。`kill -9` 无效 → **重启恢复**。
+  教训：**ssh 超时 ≠ 设备脚本停止**，r68a 尾部的 unbind 在 pkill 后
+  继续执行造成图谱churn；禁绑定已绑定 sensor 的轮次设计继续有效。
+- **媒体控制器 uapi 破译（本内核实测）**：`media_pad_desc`=20B、
+  `media_link_desc`=52B、`media_links_enum`=40B（含尾部
+  `reserved[4]`），ENUM_LINKS ioctl = `0xc0287c02`。自研 python
+  ioctl 工具（枚举实体/设链/ENUM_LINKS dump/子设备 S_FMT）全部
+  打通——设备上 `media-ctl -p` 损坏不可用，今后一律用本工具链
+  （`ov13850-stdlib/mediasetup_front.b64` 等已更新）。
+- **-EINVAL(-22) 根因（本轮核心发现）**：`video0` open 时
+  `v4l2_pipeline_pm_get` 沿启用链扫 s_power，`csid_set_power` 调
+  `csid->res->parent_dev_ops->get(camss, csid->id)`，而
+  `vfe_parent_dev_ops_get` 的实现是
+  `ret=-EINVAL; if (id < vfe_num) ret=vfe_get(&camss->vfe[id]);`
+  ——**CSID id 直接当 VFE 索引用**。csid0(id=0)→vfe0 ✓（后摄
+  一直没事），**csid1(id=1) ≥ vfe_num=1 → 恒 -EINVAL**（前摄链
+  `video0` open 必死，dmesg = `Failed to power up pipeline: -22`）。
+  上游 8x16 表虽列 CSID1 但主线从未被使用，故 bug 从未暴露。
+  对照实验：同一 boot 下后摄链 enable+open 成功、切前摄链同
+  open 即 -22，铁证。
+- **修复（pkgrel 72）**：`camss-msm8939-driver.patch` 增设
+  `vfe0_parent_dev_ops`（get/put/get_base_address 一律映射到
+  `camss->vfe[0]`），`csid_res_8x39` 三条 CSID 全部改指该表；
+  对纯净 6.12.1 camss.c `patch --dry-run` 通过。pmaports
+  pkgrel 71→72 + sha512 已更新。**需用户重编内核（#73）后
+  跑 r68d 验证前摄。**
+- **取证与工具遗留**：实体→/dev 节点映射用 chardev devinfo
+  readlink 直查（本 boot venus 抢占 video3/4，rdi0 节点仍为
+  video0，但**节点号每 boot 会漂移，禁止硬编码**）；r68 期间
+  未做任何 MMIO 操作。
+
+
+
+
+
+
+### r68d 设备轮（已执行）：-22 修复生效——video0 首次可开；真流无帧、后端总线楔死，以前摄管线为界首次全深度取证
+
+- **内核 #73（pkgrel=72）部署 + 开机既验证**：`video0 open 成功`
+  （无 "Failed to power up pipeline: -22"），链路 setup 全 OK、
+  9 个 pad fmt 全落位 2592×1944/0x3007。**csid1 上电修复 = 生效**。
+- **真流依然无帧**（set-fmt 成功、STREAMON 后 v4l2-ctl 卡 DQBUF、
+  /tmp/L68c.raw 0 字节、sensor runtime_status=active= s_stream 已到
+  sensor）。趁挂死流做**中流 MMIO 只读**（DTS 白名单内），证据链：
+  - `csid1(0x1b08400)`：CORE_CTRL_1(0x08)=0x00020009
+    = csiphy_id=1/0x9 ✓；CID_LUT_VC0(0x10)=0x2b ✓；CID0_CFG(0x20)
+    =0x23（ISPIF_EN|0x1 + RDI_EN|0x2 + decode=RAW10 + RDI_MODE=
+    RAW_DUMP）✓；**IRQ_STATUS(0x68)=0x28000055 非零且递增**
+    = MIPI 数据确实到达 CSID1；
+  - `csiphy1(0x1b0b000)`：0x04/0x08/0x0c/0x10/0x2c 非零（lane 活动态）；
+  - `ispif VFE0 块`：IRQ_MASK_0(0x208)=0x0a492000 ✓；
+    **INTF_INPUT_SEL(0x244)=0x10 = RDI0 的 CSID 选择位=CSID1 ✓**；
+    INTF_CMD_0(0x248)=0xfffffdff = bits9:8=01
+    = **CMD_ENABLE_FRAME_BOUNDARY（RDI0 等帧界已开启）**；
+    RDI_INTF_0_CID_MASK(0x264)=0x1（VC0）✓；RDI_INTF_0_STATUS(0x2d0)
+    =0xe（bit0≠1 = 接口活动）✓；RDI1/RDI2/PIX 均空闲 0xf；
+  - `vfe wm0`：WR_CFG(0x6c)=0x3（RDI path+FRM_BASED）✓；
+    **WR_BUFFER_CFG(0x84)=0x01957973 —— bits31:16=0x195=405=2592 宽
+    RAW10 wpl ✓（与后摄 0x014A=330 同构）→ v3 帧基几何对 2592 泛化
+    验证通过**；WR_IRQ_SUBSAMPLE(0x8c)=0xffffffff ✓；
+    **但 WR_PING/PONG(0x70/0x74)=0xff800000/0xff000000（跨 2s 完全
+    冻结）+ IRQ_STATUS_0(0x38)=0（无 ping/pong 切换）**
+    **IRQ_STATUS_1(0x3c)=0（无 BUS_OVERFLOW）→ VFE 总线 0 写;
+  - **后续再读 VFE 寄存器页 = SIGBUS（总线楔死）——教训：真流挂死
+    稳定后 VFE 寄存器访问即自毁，MMIO 快窗取证只读
+    csid/csiphy/ispif/clk_mux 安全页。**
+- **r68d 中流实证结论**：数据活过 sensor→csiphy1→csid1→ispif(RDI0
+  接口已选 csid1、CMD=等帧界、接口活动)，死在 **CSID 帧界判定→
+  VFE WM 触发**之间；疑问收敛至(1)真流数据本身未构成有效帧界
+  （DT/LUT/FS-FE 层），(2)共享 RDI0 接口 mux 的某些位残留。
+
+### r68e/r68e2 设备轮（已执行）：CSID1 片内测试图判定轮——🎉 前摄链路全绿，根因缩至传感器/PHY 侧
+
+- **r68e**：开 TG 控件报 `Resource busy`——读码确认
+  `csid_set_test_pattern`: **csiphy→csid 链接使能时禁止开 TG**
+  （sink pad 有启用链接即 -EBUSY）。
+- **r68e2（fresh boot）**：链路搭建后**先关闭 csiphy1→csid1**、
+  再置 `test_pattern=1`（动态解析 csid1 节点，避免节点号漂移）：
+  **12 帧全捕，75,582,720B = 12×6,298,560（2592×1944 RAW10 精确）**
+  ——TG 递增图案逐行锯齿、10-bit 全域均匀（mean 511, zero%≈0.4%）
+  → **解包器校验一致**（`frames/r68/L68e_f0.raw +
+  L68a_tg_f0_crop.png`，裁窗渲染纹理锯齿清晰）。
+- **判定意义**：TG 数据走同一通路（csid1→ispif RDI0 接口→VFE wm0
+  →内存）+ 同套 2592 帧基几何 → **前摄管线/几何/打包全线正确**。
+  r68d 的失效只可能来自 **csiphy1/ov5693 实流数据源**。
+- **r68d 的真相修正**：TG 流使 VFE 正常写、总线不死 → r68d 的
+  SIGBUS 总线楔死 = **真流数据路径特有**（对齐(1)号假设：
+  真流无有效帧界长流打底 → VFE 等待死锁 → 总线失能）。
+
+### r68f–r68g2 设备轮（已执行）：取证轮三连翻车 → 工具链硬伤逐一暴露并修复
+
+- **必须先躲避的三类雷**（均实证）：
+  1. **挂死流进程连 timeout 的 SIGTERM 都不听**——TERM+KILL 双杀后
+     若仍活，唯一出路 = 立刻 reboot（r68a 已知）；
+  2. **bg 的 v4l2-ctl 未加 `</dev/null`**：继承 ssh 通道 stdin →
+     DQBUF 挂死后 ssh 永不 EOF → devssh 空转超时（"看起来像设备死亡"）；
+  3. **devssh.py 旧实现：设备重启/断网后 ssh 不主动退出**（无
+     keepalive，连接半开直挂到 TCP 超时），且**只在连接关闭时
+     一次性打印** → 介质丢失＝全部输出蒸发——用户指出后重构：
+     `ServerAliveInterval=3/CountMax=2/TCPKeepAlive/ConnectTimeout=10`
+     （设备死亡 ≤9s 内 EOF）+ **流式逐块打印实时 flush** + 显式
+     `DEVSSH_TIMEOUT_DEADLINE/DEVSSH_EOF` 标记 + finally 强关。
+- **ash `exec >> 文件` 静默自杀（本轮最大工具发现）**：设备
+  busybox ash 中 `exec >> /home/user/X.log 2>&1` 后**后续全部
+  不执行、无任何报错输出**（`set -x` 追踪到 `+ exec` 即死；
+  5s 微测隔离复现：`echo BEFORE_EXEC` 后即停）。**设备脚本
+  禁用 exec 重定向**，改用调用点重定向
+  `sudo -S ash script.sh >> /tmp/R.log 2>&1`（微测验证等效可行）。
+- **取证转储通道定为：/tmp（实测跨重启存活）+ /home/user（ext4 rw，
+  touch/python 写均验证）双写**；轮末 sync+cp。
+- **r68g2a/r68g3 仍未产出日志**（exec 排除后仍静默早死，疑点更多，
+  触发条件待定：疑似与脚本长度/后台子进程/TG 消息纠缠）——
+  下轮改用 `set -x` 全程追迹 + /tmp/rA.log + 轮末端 cp，一次
+  分段验证定位。
+
+### r68g 关键旁证（已执行，半途而废但抓到铁证）
+
+- **`/tmp/L68g_tg.raw` = 0 字节（22:18）**：**该次 fresh boot 上
+  TG 捕获本身也挂死**（r68e2 明明 12 帧全通！），此后 P2/P3 全被
+  video0 僵尸占满（EBUSY），结尾未到自重启分支 → **设备 ~3 分钟后
+  自行 panic 重启**。两次"设备自行重启"均 = **真流/挂死流留下的
+  楔死总线 + 僵尸进程 → 内核 panic**（另一次 = r68f 脚本内
+  STUCK_REBOOT 保护性重启，设计内）。
+- **开放疑问**：TG 在"干净 fresh boot"上为什么偶发挂死（r68e2 通过
+  而 r68g/r68f-v1 通过前次 boot 的空镜像仍成功一次）——
+  **下轮优先解决**：TG 首流 + 后 fps/时长参数重测；同时考虑
+  `--stream-skip=0/2`、count、boot 后绝对时延等变量的系统对照。
+
+### r68 系列当前收敛结论 + 下轮预案（r68h）
+
+- **阶段判定**（按用户阶梯"前摄验证→彩色→13MP→HFR"）：
+  1. ✅ 前摄管线修正（csid1 上电，pkgrel 72）：
+  2. ✅ 前摄 image 链路+几何（r68e2 TG 12 帧判定）：
+  3. ⛔ 真流数据路径（csiphy1/ov5693 侧）：
+  **唯一活跃矛盾点** = 真流帧界缺失。候选 =
+  (a) sensor 输出线率/DT/FS-FE 与 CSID LUT 不匹配；
+  (b) 含 7-9 csid 错路（csiphy1→csid0 旧假设炮灰）残余；
+  (c) T 这条路脱解后交错/裸帧不带有效 VC。
+- **r68h 预案**（全部带 `</dev/null`、/tmp 日志、真流快窗 MMIO、
+  结尾保护性 reboot；MMIO 只读安全页）：
+  - A) TG 基准 + REAR 参考真流（同 boot）：取"真实数据良好帧"的
+    csid0/ispif 取证基准（r66 配置），记录 IRQ 位模式 = 模板；
+  - B) 前摄真流快窗：STREAMON 后 0.8s/3.3s 两次 csid1/csiphy1/
+    ispif 快照 + CLKMUX(0x1b00020) 验证 select_clk_mux 写入；
+    对照 A 的位模式找差位；
+  - C) 传感器侧证据：ov5693 中流 readback（I2C 刷流配置帧）+
+    csiphy1 GRP 寄存器 + TN 内部帧率（via IRQ dt 报文中）对照。
+  - success（E）判定：csid1 IRQ 状态差位 = MISMATCH 类型指纹
+    → 指向 root cause（帧界 vs DT 映射 vs mux）。
+
+### r68g2→r68h 阶段（用户超出套件外的取证迭代,核心教训已固化）
+
+- **开机后当轮 r68h v3 三杀已定位**：`/dev/mem` mmap 读**流中任何窗**
+  ⇒ CPU D-state 总线悬挂（**无 oops/panic/pstore dump**）→ 外部 watchdog
+  ~1-3min 硬复位。v3a 全窗/v3b csid0x100/v3c csid0x70 全死在
+  `p1_mmio_dump`（rear 流中），否定"窗深"变量 ⇒ **流中一律禁止 MMIO**。
+  历史复核确认：mid-stream MMIO **从未在任何一轮成功过**（r68e2=纯
+  capture，r67a=buffer 分析器，r68g/r68f 输出为空）。
+- **MMIO 验证深度（mmap 路径）≠ DTS 窗口宽度**：验证过的安全集 =
+  csiphy0/1 ≤0x40、csid0/1 ≤0x70、ispif [0x1b0a200,0x340)、
+  clkmux [0x1b00020,0x34)。qmmio devkit(r15) 的更宽读数**不能外推**到
+  mmap 路径。MMIO 的可行时机见下方 H5 假说（v4 实证流后读亦死，早期
+  "只允许 idle/流后"结论已作废）。
+  **mid-stream 状态取证改走 /proc/interrupts 计数采样（procfs 安全）+
+  0.8s 处一次 /dev/i2c-3 SENSE dump（CCI 独立总线）**。
+- **pstore 死亡签名**：楔死不产 panic → dmesg-ramoops 只会留当前 boot
+  早期 oops（pm8916_bms_vm 那类）；"干净无 panic 的死亡"本身即
+  D-state 悬挂指纹（watchdog 硬复位的旁证）。
+- **开机启动形状（launch shape）判定**：
+  - ❌ `ssh "echo pw | sudo -S sh X >> log 2>&1"`（append 形状，2 次复现
+    于 2-4s 内接端挂死+死亡）——r68g2 记录的先前"微测验证等效"结论
+    **被推翻**，禁用；
+  - ✅ 通道 stdout 形状 `ssh "... sudo -S sh X 2>&1" > HOSTFILE`（G2 形状，
+    实证脚本可全程跑完）；日志分析走事后文件拉取。
+  - 设备脚本内禁 `exec >>`、禁 pkill（wedge 检测直接 abort）。
+- **qmmio（debugfs 读数器）已除役，不得复活**：用户确证其在使用中
+  **频繁直接引发内核恐慌**，已从内核移除。r15 时代的成功读数实为
+  高险路径（读窗曾远至 VFE 0x1b10000 / VBIF 0x1b40000 / ISPIF 全
+  aperture）。#73 上唯一读通道 = `/dev/mem` mmap。
+- **深度教训：每个 MMIO 读的死亡矩阵（mmap /dev/mem）**：
+  1. 流中读 = 死（v3a/b/c，全在 `p1_mmio_dump`）；
+  2. 流后读 = 死（v4 `p1_post_mmio`，rear 捕获完成后立即读）；
+  3. boot 内首个流之前的 idle 读 = rear ✓ / tg ✓ / **front ✗**（v5i
+     `front_idle` 死）。
+  死亡指纹一致：无 oops/panic/pstore → D-state 总线悬挂 → watchdog
+  ~1-3min 硬复位。
+- **统一假说 H5（待 v5w 验证）**：读死亡发生在"该设备经历过
+  runtime-resume→autosuspend 周期（GDSC 已塌缩）"的窗口；boot 后从未
+  被 resume 的设备保持带电、可读。v5i 的 front-idle 死亡 = CSID1 曾被
+  pattern-on/off 走过一轮 resume→suspend；rear/tg-idle 通过 = 设备尚未
+  走过该周期。**v5w 验证协议 = 开机把全部 camss 平台设备
+  `power/control=on`（禁 autosuspend）后再读**；同时记录每个
+  runtime_status 变化。
+- **IDLE 寄存器快照几乎全是零**：CSID/ISPIF/CSIPHY 配置寄存器由驱动在
+  streamon 时写入；idle 期读回仅 CLKMUX（0x1b00020=0x0f, 0x1b0002c=
+  0x3f）非零。⇒ idle dump 证据价值有限，但 front-idle 死亡本身=
+  重要事实。
+- **双写纪律再升级：cp 必须 **紧跟 sync**（每产物）。v5i 全部 /tmp+
+  /home 拷贝因楔死吃掉 ~30s 写回窗口而变成 **0 字节 inode**（ext4
+  data=ordered 懒写回被没收）；v4 的 irq_rear.txt 能幸存纯属 sha256
+  读路过促 flush 的运气。规程：`cp … && sync` 或写后立刻 sync。
+- **pm8916_bms_vm oops 与读数无因果（新论证）**：地址空间（SPMI/PMIC
+  电源管理数据结构）与相机读窗无交集；时间戳 = boot 内 t≈10.3s
+  探测器阶段（9.99s ov5693 依赖环、10.04s Goodix、10.3s bms 线程），
+  距读数时刻（uptime 700-800s）差数分钟。今天多次楔死无 panic 不写
+  pstore → ramoops 环中旧 oops 持久滞留 → "每次相机轮后看到它"的
+  错觉。A/B 法：v5w 前后各存 pstore 基线对比时间戳是否翻新。
+- **stock ov5693 库解码完成**（`o5693-stdlib/stock_tables.c`）：
+  唯一硬件 res_settings（257 项，2592×1944，HTS=0x0a70，VTS=0x7c0），
+  格式 {u16 reg,u8 val,u8 dl} u32-LE 步长 8；m0 位于文件内
+  @0x2954/257 + @0x2778/11 + @0x3394/10；组寄存器 {3208=0x10/0xa0}；
+  AEC 覆盖集 {3808,380a,380c,380e}。stock 与上游差：
+  stock 写 PLL 0x3001/0a,0x3002/80,0x3006/00,0x3011-0x3015（上游不写）；
+  0x3098-0x309b = stock 03/1e/01/02 vs 上游 02/19/02/01（stock 24MHz
+  xvclk vs 我方 19.2MHz，属预期差）；上游 pclk=167.68MHz 固定
+  HTS=2688 VTS=2078 crop16/6，stock ~159MHz/2672/1984 crop0/0。
+  离线对拍器 `/tmp/opencode/cmp_sense.py`（live vs 上游预期 vs stock）就绪。
+
+### r69–r72 设备轮（已执行与修正）：解码 bug 全链修复 + 真白墙验证（用户三次纠错主导）
+
+- **⚠ r69"彩色里程碑"作废**：用户指出图像内容与物理场景（白墙/充电器/路由器，
+  遮挡=全黑）不符，追问后实锤**三条管线 bug + 一个设置缺位**：
+  1. **位序反了**：pBAA 实际 = MIPI RAW10 打包（bytes0–3 = 像素高 8 位，
+     byte4 = 低 2 位 LSB 在前），我按反序解 → 平滑信号压到 1/4 底 + 抖动位
+     放大成满幅盐噪/伪彩环（"彩虹环"= 纯解码伪影）。证据：遮挡帧
+     bytes0–3 median=4（98% 恒值）、byte4 median=69——反序解出 median 260
+     的假底座。**金标准对拍**：正确位序解 r66 帧 = 与当日成功黑白参照
+     （笔记本+桌面）结构完全一致 ✓。
+  2. **欠曝**：手动通路无 AEC，传感器跑 exposure 默认 1536 行 +
+     增益 0x10(1x)，室内白墙只比黑台阶高 2–4 counts（r66 能出图全靠
+     画面里点亮的笔记本屏）。ov13850 暴露完整 ctrl：exposure
+     (4–3324 行, max=vts−4) + analogue_gain(0x10–0xf8, 实益=reg/16)；
+     BL 台座为增益后级（遮挡下 gain×8 不放大 median 只放大噪尾 ✓ 实测）。
+     **可用组合 = exp 3320 + gain 0xf8**(v4l2-ctl --set-ctrl 流前设置，
+     s_stream 的 handler_setup 会刷入硬件)。
+  3. **demosaic fill 两次踩坑**：v3 cascade fill 跨通道污染 + 留洞；
+     v4 通用 diag4 对 G 位同样留洞（R 真实采样点(odd,odd)相对 G1 位
+     是**轴向**邻居而非对角）→ 渲染图 50% R/B=0 → 全图假绿偏。
+     正解 = **逐相位核**：G1 位 R 竖直对/B 水平对，G2 反向，
+     B 位取 R 四对角（反之亦然），G 用四轴向。墙帧渲染均值
+     R248/G249/B246 中性 ✓。
+- **设备轮证据链**（raw 留档 camera-ref/frames/）：
+  - r70 遮挡帧两次（blocked/blocked2 均 16.6–16.8 四通道全等全平
+    = 真黑参考 ✓ 与 LineageOS 遮挡黑一致；第一次实为对暗处未遮实）
+  - r71 曝光梯子 A(默认1536/1x)/B(1000行/1x)/C(+gain8x)：list-ctrls
+    回读确认写入、增益后级 BL 行为、暗电流随积分微降
+  - r72 白墙帧（exp3320+gain248, sha b9f69b8c…）：median 207、p99 472、
+    R/G=0.52 B/G=0.74 且空间均匀（全局通道响应差而非镜内色渐晕）；
+    减 BL(16.8)+WB+正确 fill 后 = **中性白墙，色调/内容/几何与物理
+    场景一致**（右上角贴纸物件、右缘线缆、墙面痕迹）。
+- **工具沉淀**：`camera-ref/tools/decode_ov13850.py`
+  （正式版解码：MIPI 位序 unpack + 逐相位 bilinear + 暗参考 BL +
+  中值 WB + 共享窗 gamma tonemap；三个金标准验证注解在文件头）。
+- **下一步候选**：a) 彩色物体试拍（验证全彩与 CCM 需求）；
+  b) 墙帧做逐通道 lens shading LUT；c) 13MP 全幅(4224×3136)替代模式
+  曝光上限更高；d) HFR 模式（exp_def 666 行系）；前摄诊断保持冻结
+  （v5f 方案留档 tools/r68h_f_skipped.sh）。
+
 ## 5. 风险
 
 - 从地址/ lane 顺序是解码 + 惯例值, 必须 `i2cdetect` + 抓帧复核.
@@ -457,3 +1047,368 @@ Bayer: R/B 偏向 {176,178,2,179}; G 偏向 {172,173,1,174} (倾斜非分类)
 - 全幅 13MP 分档主线 VFE410 带宽与 camss 驱动是否吃得下,
   首版不验证, 先稳定 2112x1568.
 - AF (DW9761) / 闪光灯 (LM3646) / EEPROM 全部二期, 不 blocking.
+
+## 6. 硬件 PIX 路径 (VFE ISP) — 调查与计划 (r76 规划)
+
+### 6.1 动机
+
+- 主线路线现在只有 RDI (raw 直写), 需要 Wan 端做完整 ISP 才是"能用相机";
+  VFE 4.1 有完整 ISP (demosaic/WB/gamma/scale), 驱动侧 `line_num=3` 只供
+  RDI, PIX 线 (line 3) 没实例化.
+- 硬件出 NV12 后, ffmpeg/任何 V4L2 消费者原生可用, 这是"能用相机"的正解;
+  软件解码管线 (decode_ov13850.py) 反正保留给金标准对照.
+
+### 6.2 调查结论 (全部对拍过源码/设备)
+
+- **实体命名规则** (`camss-vfe.c msm_vfe_register_entities`): VFE line i
+  的 subdev 叫 `msm_vfe%d_rdi%d` (i<PIX) 或 `msm_vfe%d_pix` (i==PIX),
+  视频节点一律 `msm_vfe%d_video%d`. 设备实测实体:
+  csiphy0/1, csid0/1/2, ispif0/1, `msm_vfe0_rdi0`, `msm_vfe0_video0`
+  → 我们的"video0"就是 line0 RDI 的视频节点, **没有 pix 是因为资源表**.
+- **卡点 = 资源表**: `camss-msm8939-driver.patch` 里 msm8939_resources
+  直接复用 `vfe_res_8x16` (V4L2 `line_num=3`), PIX 线根本没创建.
+- **主线 gen1 PIX 代码是齐的**: `camss-vfe-4-1.c` 有
+  - `VFE_0_CAMIF_*` 完整 CAMIF 序列 (0x2f4 cmd / 0x2f8 cfg / 0x300 frame
+    / 0x304 windows / 0x30c subsample / 0x31c status)
+  - `VFE_0_MODULE_CFG_DEMUX/CHROMA_UPSAMPLE` 模块使能位
+  - `VFE_0_DEMUX_CFG/GAIN/EVEN_CFG/ODD_CFG` demux 编程
+  - `vfe_enable_irq_pix_line`, NV12/NV21 plane 尺寸计算
+    (`vfe_get_wm_sizes` NV12/NV21 分支)
+- ** formats_pix_8x16 = NV12/NV21/NV16/NV61** (camss-vfe.c 172 行起).
+- **媒体图接线全自动**: `camss_link_entities()` 按 `line_num` 循环生成
+  csiphy→csid→ispif→vfe(idx 0..3) 全链, 一改 line_num=4,
+  `msm_vfe0_pix` subdev + `msm_vfe0_video3` 节点 + ispif→vfe pix pad
+  链接全部自动出现. DTS 不用动 (csi0_pix clock 我们已预留).
+
+### 6.3 三个真缺口 (主线代码 vs 硬件需求)
+
+1. **CAMIF 无 bayer 分支** (`vfe_set_camif_cfg`): switch 只认
+   YCbYCr/YCrYCb/CbYCrY/CrYCbY 四种 YUV pixel pattern
+   (0x4..0x7 写 `VFE_0_CORE_CFG` 0x01c).
+   - **下游参照**: `msm_isp40.c msm_vfe40_cfg_camif` 写同代偏移:
+     0x1C=pattern|input_mux<<16, 0x300/0x304/0x308=frame/window,
+     0x2F4/0x2F8=cmd/cfg, 0x30C=subsample. 逐位对得上主线偏移.
+   - **bayer pattern 值**: 下游 `include/media/msmb_isp.h`
+     `ISP_START_PIXEL_PATTERN`: RGRGRG=0, GRGRGR=1, BGBGBG=2, GBGBGB=3,
+     YUV_YCbYCr=4 — 与主线 YUV 宏 0x4-0x7 次序完全一致 →
+     **BG (底层列) = 0xBGBGBG = 值 2** (我们传感器 CFA:
+     B(e,e) G(e,o) G(o,e) R(o,o) → 行0=BGBG 行1=GRGR → BGGR列型 = 2).
+2. **DEMUX 无 bayer branch 并缺值**: `vfe_set_demux_cfg` 只写 YUV 四种
+   even/odd pattern (0x9CAC 等). bayer 的 DEMUX_EVEN_CFG/ODD_CFG 值
+   (0x9C9A 族?) **主线/下游内核都没写**.
+   - 下游 msm_isp40.c 全文不碰 demux 寄存器 = 下游架构里 ISP 模块参数
+     (demux pattern/增益) 是**用户态 HAL 经 MSM_VFE_REG_CFG ioctl**
+     写进去的 (chromatix), 内核只是执行器 → 参考值不在内核源里.
+   - 计划: bayer even/odd cfg 值按 "nibble 选择通道" 语义试错枚举
+   (0x9C9A/0xC9CA/0xAC9C/0xCA9C 4 个候选 × 校验顺序, 一次重启=1 试).
+3. **ISP 模块使能**: ~~主线没人写 0x018 MODULE_CFG~~ **实现时更正**:
+   `vfe_set_module_cfg` (4-1.c) 存在且写全部四模块位
+   (DEMUX/CHROMA_UPSAMPLE/SCALE_ENC/CROP_ENC), gen1 pix enable 流
+   (camss-vfe-gen1.c, `vfe_enable_output` 的 PIX 分支) 已完整接管
+   module/camif/realign/xbar/demux/scale/crop/clamp/camif_cmd 全序 —
+   所以 patch 只需补 bayer 分支, 模块使能无需动.
+
+### 6.4 patch 方案 (`camss-vfe41-pix-bayer.patch`, 增量 patch)
+
+1. camss.c: 新 `vfe_res_8x39` 表 (拷贝 8x16, `line_num = 4`),
+   msm8939_resources 改指该表. (csiphy/csid/ispif 维持 8939 现有表.)
+2. camss-vfe-4-1.c:
+   - 宏补 bayer: `VFE_0_CORE_CFG_PIXEL_PATTERN_BGBGBG 0x2` 等 4 档;
+   - `vfe_set_camif_cfg` 增加 SBGGR10_1X10 → 0x2 (BGGBG) 分支
+     (sink mbus code 判据);
+   - `vfe_set_demux_cfg` 增加 bayer 分支: 写试错字节 ME:
+     gain 0x80×4 通道 (与软管线一致基准), even/odd cfg 从候选集;
+     (demux 是 bayer→RGB 的唯一在片转换, 增益 = 后续 WB 校准点)
+3. 不动 ispif.c: 主线 ispif 已有 pix overflow 处理; 若 streamon 后
+   卡死, 再对比下游 `msm_ispif` pix intf 编程补一段.
+4. 可选: demux 增益暴露 module param (对齐我们 r72 标定 1.92/1.34),
+   硬件色彩起点与软管线同基线.
+
+### 6.5 验证路线
+
+1. 编内核 (pkgrel +1) + sideload + 重启 → `ls /sys/class/video4linux/`
+   应多出 `msm_vfe0_video3`; `media-ctl -p` 应有 msm_vfe0_pix 实体.
+   **r76 现状: 补丁已落盘** (见 6.7), 待用户 build #73 + sideload.
+
+### 6.6 pbwrap 内核模块 (已放弃, 留档)
+
+- 尝试过完整 v4l2loopback 式内核包装 (pbwrap.c, ~1000 行, BTF 齐活,
+  vermagic 对齐), insmod 三连修: ① struct module 尺寸 = BTF 配置门控
+  (DEBUG_INFO_BTF[_MODULES] 影响布局, 必须与运行内核一致);
+  ② libelf-dev 主机补装后 tools 构建 ok; ③ 主机 pahole 生成的模块 BTF
+  与设备内核 BTF (chroot pahole 版本不同) 不一致 → 剥 .BTF/.BTF.base;
+  ④ 最终失败于 CFI: pmOS 内核 CONFIG_CFI 锁间接调用, gcc 编的外置
+  模块不进 CFI 表 → `do_one_initcall CFI failure` 只能放弃.
+- 文件: camera/pbwrap/{pbwrap.c,lut.h,Makefile} (留档不进构建);
+  lut.h = 1024 表 gamma 1/2.2, 与 decode_ov13850.py 同源.
+- 软解码管线 (decode_ov13850.py) 继续当金标准/对照工具.
+
+### 6.7 r76 补丁 (已落盘, pmaports)
+
+两份补丁已进 `pmaports/.../linux-postmarketos-qcom-msm8916/`,
+pkgrel 72→73 (内核 #73), sha512 已更新, 交叉编译全链通过
+(ksrc `make M=drivers/media/platform/qcom/camss modules`, LD+BTF 无错).
+
+1. `camss-msm8939-driver.patch` (重写): msm8939_resources 的
+   `.vfe_res` 从 vfe_res_8x16 (line_num=3) 换为 **新增
+   vfe_res_8x39 (line_num=4)**; 其余 csiphy/csid/vfe0_parent_dev_ops
+   结构不动.
+2. `camss-vfe41-pix-bayer.patch` (新): gen1 VFE 的 bayer 三缺口——
+   - `CORE_CFG_PIXEL_PATTERN_BAYER_*` 宏 0x0-0x3 (下游
+     `msmb_isp.h ISP_START_PIXEL_PATTERN` 次序, BGGR=BGBGBG=0x2)
+     + `vfe_set_camif_cfg` 全 bayer 码表分支 (8/10/12bit 四相位);
+   - `vfe_set_demux_cfg` bayer 分支 + **模块参数**: demux_even/
+     demux_odd (选择子, 默认 0x9cac 首猜) 与 demux_gain0/1
+     (增益字 0x8080 默认 = 原值), 运行期调 `/sys/module/qcom_camss/
+     parameters/*` 可免重编试错;
+   - `formats_pix_8x16` 增补 4 个 SBGGR10_1X10 族 sink 条目
+     (NV12 视频节点映射; pix 线 sink 码表原本只有 YUV, rdi 表不受影响).
+- 设备脚本 `/tmp/opencode/r76_pix.sh`: media 图 = csiphy0→csid0→
+  ispif0→**msm_vfe0_pix** (rdi0 链接显式关闭以保 ispif 首链接解析
+  = PIX0), pad 链 fmt=SBGGR10 2112x1568, video3 NV12 抓 3 帧,
+  实体缺失时报 NEW_KERNEL_REQUIRED 不重启, 卡死保护 reboot 照旧.
+- 首帧预期 = 可能色块/相位错误 (selector 未知), 用帧统计+已知白墙
+  反推 selector 映射, 然后重跑参数而不重编.
+
+
+### 6.8 r76a/b (内核 #74): PIX 首亮成功 + 亮度链全通
+
+用户 hand-build #73 内容后 `uname -v` 报 #74 (pkgrel 73),实体全数就位:
+`msm_vfe0_pix` (ids 58)、`msm_vfe0_video3` (major 81 minor 3)、rdi0/1/2、
+video0-2、ov5693+ov13850 全 bind。**PIX 通路 buffer/IRQ 层全通,零卡死零 dmesg 报错。**
+
+- **r76a 首亮** (/tmp/opencode/r76_pix.sh): media 图 = csiphy0→csid0→
+  ispif0→msm_vfe0_pix, video3 抓 NV12 3 帧 ×4967424 = 2112×1568×1.5
+  **精确几何** (Y 1568 行 ×2112, chroma 784 行 ×2112 UB).
+- **r76b 白墙** (+exposure 3320 行 / gain 248 版 r76_pix_b.sh):
+  - Y med=46 max=105,列向梯度 col0 med=29 → lastcol med=7 = 透镜 shading
+    真实结构;行列无相位条纹。
+  - **亮度尺度与 r72 金标准吻合**: raw10 白墙 med 207/p99 472 ÷4 = 52/118
+    ≈ 实测 46/105 → **10→8 位截断路径正确** (Y = v>>2)。
+- **真异常**: 白墙 U=V=41 (应 ≈128) → 色度平面全错;后续确认 U/V = 完全相同
+  (c1 彩条证实) → **chroma 双平面同源,U/V 写同一路数据,色度路由是头号缺口**。
+
+### 6.9 demux gain 寄存器字段破案 (r76b 后查源码 + r76c 作废记录)
+
+`camss-vfe-4-1.h` 162-167 行,已核实:
+
+```
+VFE_0_DEMUX_GAIN_0        0x428:  CH0_EVEN = 0x80<<0   CH0_ODD = 0x80<<16
+VFE_0_DEMUX_GAIN_1        0x42c:  CH1      = 0x80<<0   CH2     = 0x80<<16
+```
+
+0x80 = gain 1.0。**上轮 255 等单字节值写入会把其他字段清零** —
+r76c c2/c4 捕获因此作废 (c3=c1 重复, c1/c2 有效),**正确写法 = 十进制
+8388736 (0x00800080 = 两字段各 0x80)**,必须同时写满 32 位双字段。
+
+demux EVEN/ODD cfg (selector) 主线 YUV 常量 0x9CAC/0xC9CA/0xAC9C/0xCA9C
+= 同一组 [9,c,a,c] nibble 的 4 相位旋转。TP 上换 selector 无感 (各相位
+同色, TP 本身对 selector 不敏感,不构成反证);现值 0x9cac。
+
+### 6.10 r76d: RDI 彩条 ground truth 采集成功 (+ ispif 换链 EBUSY 教训)
+
+- **首跑翻车**: r76d 的链表没先禁 pix,`ispif0→rdi0` enable 遇 EBUSY
+  (主线 `ispif_link_setup` 第一条: 同一 source pad 已有 enabled link 时
+  拒绝再次 enable,RDI 从未被真正启用 → v4l2-ctl 首流挂死 →
+  TAG_HUNG_PROTECTIVE_REBOOT 保护性重启)。
+- **教训**: pix/rdi 同一 ispif source pad,**换链必须先禁后启,顺序固定**。
+  这与 r76a 里"先禁 rdi0 再启 pix"的既有写法互为镜像,当初未对称推广。
+- **mg76me.py 已统一参数化** (python3 /tmp/mg76me.py rdi|pix): pix =
+  先禁 rdi0 再建 csiphy0→csid0→ispif0→pix; rdi = 先禁 pix 再链到 rdi0。
+  mg*.py 的 link() 已有 try/except EBUSY 容错; r76e 因此也需要同一套。
+- 重启后复跑成功: `/home/user/76d/L76d_rdi.raw` 3 帧 pBAA raw10
+  (2112×1568, 4139520 B/帧, --stream-skip=2),设备端 sha256 存档。
+
+**OV13850 test_pattern=1 (Vertical Color Bar Type 1) 真值** — 用
+pBAA 解包 (byte0-3 = 每 px 高 8 位, byte4 = 低 2 位 frag byte; SBGGR10:
+B(e,e) G(e,o) G(o,e) R(o,o)) 从 RDI 帧解出,中心带 rows 600-900 px
+(= 相阵列 rows 280-390),每 bar 取中部 232px 莫氏窗口:
+
+| bar | 颜色 | B   | G1  | G2  | R   |
+|-----|------|-----|-----|-----|-----|
+| 0   | 白   | 1023| 1023| 1023| 1023|
+| 1   | 黄   | 0   | 1023| 1023| 1023|
+| 2   | 青   | 1023| 1023| 1023| 0   |
+| 3   | 绿   | 0   | 1023| 1023| 0   |
+| 4   | 紫   | 1023| 0   | 0   | 1023|
+| 5   | 红   | 0   | 0   | 0   | 1023|
+| 6   | 蓝   | 1023| 0   | 0   | 0   |
+| 7   | 黑   | 0   | 0   | 0   | 0   |
+
+= 经典 8 色条, G1≡G2。分析工具 `/tmp/opencode/bars_truth.py`
+(注意: 它的 bar 切片曾按全尺寸列算,相位阵列是半宽/半高,当版
+tab 有 bug — 上面这张表来自修正过的相位阵列切片重算)。
+
+### 6.11 r76e: 通道判定扫 (e1-e5) + e6 白墙基线 — 结果已入 /tmp/opencode
+
+pmaports 脚本 `/tmp/opencode/r76e.sh`,5 组 TP 彩条捕 + 白墙对照,
+产物 `/home/user/76e/L76e_e{1..6}.raw` 已全部拉回主机。gain 全部按
+6.9 正确 32 位写法; selector 维持 0x9cac。
+
+| 组 | demux_gain0 (0x428) | demux_gain1 (0x42c) | 含义 |
+|----|---------------------|---------------------|------|
+| e1 | 8388736 (双 0x80) | 8388736 | 全通道增益 1.0 基线 |
+| e2 | 8388608 (0x00800000) | 8388736 | 仅 CH0_ODD=g1.0, CH0_EVEN=0 |
+| e3 | 128 (0x00000080) | 8388736 | 仅 CH0_EVEN=1.0, CH0_ODD=0 |
+| e4 | 8388736 | 128 (0x00000080) | CH1=1.0, CH2=0 |
+| e5 | 8388736 | 8388608 | CH1=0, CH2=1.0 |
+| e6 | 8388736 | 8388736 | 白墙 (tp=0) 全 1.0 |
+
+#### 已确证结论 (真值表 = 6.10 的 8 色 bar)
+
+- **NV12 色度路由: U ← CH1, V ← CH2** (e4: CH2=0 → V=0/U 正常; e5:
+  CH1=0 → U=0/V 正常)。上轮初判的双通道同义/交换说法修正为本条。
+- **e1 == max(e2, e3) 逐点成立** (numpy array_equal 校验,含 Y 平面所有
+  微结构) → Y 平面 = CH0_EVEN 流与 CH0_ODD 流的并集/max 合成。
+- **U ≡ V,值完全相同**;per-bar = [255,128,128,0,255,128,128,0]
+  (修正列引用后。pix_truth.py 初版 U/V 列引用 +2 位错,曾报
+  [255,255,128,128,128,128,0,0] — 以本行为准)。
+  = **(B+R)/2 型混合** → chroma 通道吃到的是 B 与 R 字节交错的流,
+  再经 2×2/平均下采样。G 通道的没进色度。与 "U=V=41" 的白墙异常同因。
+- **Y 平面 = 132px 周期交错图像,不是 264px 条条 uniform**:
+  - e3 (CH0_EVEN) → Y 平面**左半** (px 0-1055) 呈 132px 粒度
+    [255×132][0×132] 交替 (= B 通道图样, bar 0/2/4/6 = 白/青/紫/蓝亮);
+    **右半全黑**。
+  - e2 (CH0_ODD) → Y 平面**左半全黑**;右半 (px 1056-2111) 连续
+    528px 255 块 (+bar 边界 2-4px 口袋),位置对应 sensor bar 4/5 区。
+  - e1 = 两者逐点 max (= 含 CH0_EVEN 与 CH0_ODD 两路流)。
+
+#### 开放问题 (未解, 待下轮)
+
+1. Y 平面 bar 边界 ±2-4px 微口袋: e1 bar0 内实测 [0@2-4]、[0@130-131]、
+   [255@132-134]、[0@135-260]、[255@261] 等 2-4px 宽的错位小口袋,
+   行/列奇偶均不相关 (row700-703 RLE 完全一致)。所有已提模型
+   (2:1 decimation / plain16 paired / pBAA 5-byte period / plain8-MSB)
+   均有小角失配,无法全对齐。**分析在此中止 (两轮循环卡死的教训,
+   首要任务是固化数据而不是反推)**。
+2. CH0_EVEN/CH0_ODD 的 "even/odd" 到底指什么维度: 实测它分工跨 Y 平面
+   前后半 (不是简单列奇偶/行奇偶),且 e3 的左半图样 = B 通道分布。
+   selector/nibble 语义整体仍未知,e2/e3 的分工是对现象的描述而非机制。
+3. CH1/CH2 来源流与 (B+R)/2 的合流方式 (寄存器级实现路径) 未定位。
+
+### 6.12 已固化资产 + 下轮入口
+
+脚本 (全部已在 /tmp/opencode,产物已拉回):
+
+- `L76e_e1..e6.raw`、`L76d_rdi.raw`、`L76_r76a/b.raw`、`L76_c1..c4.raw`
+  = 全套判据数据,NV12 捕获均为 4967424 B,pBAA 4139520 B/帧。
+- `mg76me.py` (rdi|pix 参数化换链, EBUSY 顺序安全)。
+- `r76d.sh` / `r76e.sh` (自洽版, EBUSY 修复 + 正确 gain 编码 + 通道扫)。
+- `r76_pix.sh`/`r76_pix_b.sh`、`r76c.sh` (存档, gain 写法旧)。
+- `pix_truth.py` (每捕获 bar 表 + fine row 剖面; 注意 U/V 列引用 bug)、
+  `bars_truth.py` (RDI→CFA 相位真值, bar 切片曾按全尺寸田形有 bug)、
+  `sweep_look.py` (NV12→8色条统计)。
+- 补丁 `camss-vfe41-pix-bayer.patch` (pkgrel 73, pmaports) 含
+  demux_even/odd/gain0/gain1 module params (param=0 用补丁内置默认)。
+- pBAA 解包参考 = `/home/xys/workspace/agent-workspace/camera-ref/
+  tools/decode_ov13850.py` (byte0-3 高 8 位 + byte4 frag, SBGGR10 相位);
+  demosaic/白墙金标准同源在此目录。
+
+**下轮目标** (按优先级):
+
+1. **不再重新反推微结构**。优先走增益/色彩标定: e6 (白墙 + 正确增益
+   全 1.0) 的 U_实际 = 0x80? — **先核 e6 实际值**,若白墙 Y/增益线宽 →
+   有基线即可直接对标 r72 的 WB (G=1.0, R=1.92, B=1.34) 推算
+   demux_gain0/1 里 CH1/CH2 该放什么值, 让 U/V 白墙 ≈128 = 中性。
+   (注意 U=CH1, V=CH2 — 上轮的 (B+R)/2 分析里"把 CH1/CH2 当同一流"
+   的部分以 e4/e5 为准。)
+2. 若色度流确实只能同基线,考虑**改补丁默认 selector** 试错 (同 nibble
+   旋转族), 看 U≠V 分离是否可能出现。这一步不需要解 Y 微结构。
+3. Y 微结构 (6.11 开放问题 1-3) 留给以后,非阻塞。
+- 相关 pmaports 上游 patch 索引: demux EVEN/ODD cfg 的 YUV 常量 =
+  `VFE_0_DEMUX_EVEN_CFG_PATTERN_*` 族;gain = §6.9 布局。
+
+## 7. r77 轮：stock HAL 真值恢复 + PIX bayer 配置更正（内核 #75 待构建）
+
+> 本节取代 §6.12 的"下轮目标"推测。两条独立证据链（开源 mm-camera VFE40 ISP 源码 +
+> stock blob 反汇编）1:1 吻合，PIX 色度根因已锤定。
+
+### 7.1 ground truth 来源（可复现）
+
+- **开源 mm-camera VFE40 ISP 硬件层**：repo `bcyj/android_tools_leeco_msm8996`
+  @ `f242858a8cbb2c9ad9b5b2e53d75380ae775727a`（2017-06-10），文件集已存
+  `camera-ref/stock-src/mm-camera/`（demux40/demux44 + hw/modules/{demosaic,wb,
+  colorcorrect,gamma,chroma_enhan}/ + isp_pipeline40.c/hw 头）。与 stock
+  `libmmcamera2_isp_modules.so` 反汇编交叉验证一致（demux40_open / 字符串 xref）。
+- 关键发现：
+  1. **demux 是 7 连续字的块**（0x424 period | 0x428 gain0 | 0x42c gain1 |
+     0x430/0x434 R-image(3D) gains | 0x438 evenCfg | 0x43c oddCfg），整块
+     VFE_WRITE 下发。
+  2. **bayer 用 period=1**（YUV422 才用 3）：BGBGBG → even=0xCA / odd=0x9C；
+     GBRG 0xAC/0xC9；GRBG 0x9C/0xCA；RGGB 0xC9/0xAC。我们的 SBGGR10 → 0xCA/0x9C。
+     （一致性校验：selector 的 nibble 数 = period+1；YUV 四常量与主线
+     `VFE_0_DEMUX_*_PATTERN_*` 逐字节相同。）
+  3. **demux gain = FLOAT_TO_Q(7,x) 的 12-bit 字段**（[11:0] / [27:16]）：
+     0x80=1.0，上限 ≈31.9x。**设备实测线性放大成立**（白墙 U 43.1→64.1(1.5x)
+     →122.4(2.9x)，0x3FF 才削顶）→ §6.12 的"增益不可放大"结论作废（那是
+     TP 彩条 0/255 饱和造成的假象）。
+  4. **通道语义**：ch0Even=G_even、ch0Odd=G_odd、ch1=B、ch2=R
+     （demux40.c demux_trigger_update）。
+  5. **bayer 时 CHROMA_UPSAMPLE(0x18 bit3) 必须关**：stock
+     isp_pipeline40.c:367-373 `if (is_bayer_input == 0) chromaUpsampleEnable=1;
+     else =0;`（该块是 YUV cositing 专用），realignmentBufEnable 亦=0。
+     即 bayer 的 MODULE_CFG = BIT(2)|BIT(23)|BIT(27) = **0x08800004**
+     （此前 r76 写 0x0880000C 是 YUV 值）。
+  6. 全彩需完整 ISP 模块集（demosaic/WB/CC/chromaEnhan/RGB→YUV 等），
+     register map 已整理进 stock 报告 Appendix A（Stage B 备用）。
+
+### 7.2 r76 输出签名的机制解释（已数值验证）
+
+- Y 平面 = 两个 1056 宽通道图逐行拼接：左 = CH0_EVEN、右 = CH0_ODD
+  （e1 == max(e2,e3) 逐字节；e3 仅 px0-1055、e2 仅 1056-2111）。
+  按 YUV selector 时左边是 B 相位图、右边是 G 相位图；132px = 半分辨率下的 TP
+  bar 宽（264 全分辨率），2-4px "口袋" = 水平重采样相位伪迹（RDI 真值干净）。
+- 色度 = CH1/CH2 同源 `U≡V=(B+R)/2`（绿权重精确为 0，2x2 binning）。
+  根因 = YUV 的 period=3/0x9CAC 选通套在 bayer 上，B/R 相位被混叠进两路
+  chroma，且 YUV-only 的 chroma-upsample 块被使能。
+- 另有几何缺陷：CAMIF `width*2`（YUV422 two-samples-per-pixel 语义）使一个
+  VFE 行吞两行 sensor 数据（实测 2:1 垂直折叠 + 帧重复）——颜色路由修好后
+  再治，已备用 `camif_width` / `scale_in_div` 运行时参数 A/B。
+
+### 7.3 r77 设备轮（kernel #74 / pkgrel 73，patch v1 环境）
+
+- **格式/几何扫（F1）**：只有 NV12 @ pad 几何 (2112x1568) 能 STREAMON；
+  NV12 1056/784、NV21/NV16/NV61 在 STREAMON 即 -EPIPE（`camss-video.c
+  video_check_format()` 从 vfe0_pix pad 反推期望格式后强制覆盖，S_FMT 的 rc=0
+  不代表接受）。→ 几何只能靠内核侧解决。
+- **增益曲线（F2）**：gain0=Y only、gain1=U/V only；0x40=精确减半；TP 饱和
+  数据上看不出放大（见 7.1.3 的更正）。
+- **bayer selector 直测（B1: 0xCA/0x9C, period 仍=3）→ STREAMON 挂死**，
+  保护性重启恢复；证明错 period 不是"misroute"而是 wedge，必须内核补丁。
+- **12-bit 放大（A）**：白墙 g1 = 1.0/1.5/2.88/7.99x → U=43.1/64.1/122.4/227.4
+  （5.28x 因削顶偏低，39.5% 饱和），Y 不变 → 线性、CH1/CH2 专用。
+- **基线 sha 不再跨 boot 稳定**：r76e_e1(=L76_c1=L76f_f1) sha `c203ae21…` 与
+  本次 boot 的 BASE sha `7838e5ae…` 只在 28 条 132px 台阶处的微口袋列不同
+  （U/V 100% 相同）→ 旧 sha 只作历史；跨 boot 判据用几何+路由结构，不用 sha。
+- **decimal 记录**：`0x9CAC = 40108`，不是 40106（40106=0x9CAA）。r76e/f 与
+  r77_sel.sh 历史命令里标 0x9cac 的 40106 实际是 0x9CAA；对 v2 无影响
+  （两者都是 YUV 图案），但后续扫参数一律用十进制正确值。
+
+### 7.4 补丁 v2（`camss/camss-vfe41-pix-bayer.patch` 全面改写，pkgrel 74）
+
+- bayer demux：period=1 + 按 CFA 相位选 even/odd（表见 7.1.2），YUV 分支不动；
+- bayer MODULE_CFG：清 bit3 → 0x08800004（YUV 仍 0x0880000C）；
+- demux 7-word 块补 0x430/0x434=0（stock parity）；
+- 运行时参数（0=auto，全部下次 STREAMON 生效）：`demux_period`、
+  `demux_even/odd`、`demux_gain0/1`（原始 32 位 Q7 语义）、`pix_module_cfg`
+  （0x18 全局覆盖）、`camif_width`（CAMIF pixels-per-line 覆盖）、
+  `scale_in_div`（2 = scaler 输入减半→2:1 水平放大）；
+- 验证：与 pristine camss tree `patch -p1` 干净；按 APKBUILD 顺序
+  driver→frame→pix 链式应用干净；`make M=.../camss modules`（aarch64
+  cross-gcc 16.2）零告警，qcom-camss.ko+BTF 成功 → 已接 pmaports pkgrel=74，
+  **待用户构建 kernel #75**。
+- 判据（TP 彩条）：U 变 B 图案 [255,0,255,0,…]、V 变 R 图案
+  [255,255,0,0,…]、U≠V；Y 变全宽 G。若 Y 仍折叠 → `camif_width` 试
+  2112/1056/2640；若 Y 仍是左右两半 → `scale_in_div=2`；若 U/V 仍同源 →
+  `pix_module_cfg` 反证。用户态重建：R=V, G=Y, B=U（2x2 上采样），
+  色彩不足再上 Stage B（完整 ISP）。
+- 用户态工具：`camera-ref/tools/nv12_recon.py`（伪 YUV→RGB/PNG）、
+  `camera-ref/tools/routing_validator.py`（TP 路由判决 OLD/NEW model）。
+
+### 7.5 后续（Stage B / 前摄）
+
+- Stage B：完整 ISP（demosaic→WB→CC→chromaEnhan→RGB→YUV），实现参考
+  `camera-ref/tools/r76/full_isp_stageB.md`（stock 报告 Appendix A 落地版）；
+  gamma/rgbLUT 需 DMI，VFE4.1 主线无 DMI 管线，先跳过。
+- 前摄：真流无帧界（r68 系）仍冻结；r77 起用 stock CSID/ISPIF 源码对照诊断
+  （`camera-ref/tools/front/front_cam_diagnosis.md`）。

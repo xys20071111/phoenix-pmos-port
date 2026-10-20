@@ -12,3 +12,12 @@ stock-wcnss/
 *.mdt
 *.b[0-9][0-9]
 unblob.log
+
+# camera/pbwrap build artifacts (kernel module experiment, sources only in git)
+camera/pbwrap/*.o
+camera/pbwrap/*.ko
+camera/pbwrap/*.mod
+camera/pbwrap/*.mod.c
+camera/pbwrap/.*.cmd
+camera/pbwrap/modules.order
+camera/pbwrap/Module.symvers

@@ -1,11 +1,39 @@
-diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
-index d64985c..b355ba6 100644
 --- a/drivers/media/platform/qcom/camss/camss.c
 +++ b/drivers/media/platform/qcom/camss/camss.c
-@@ -114,6 +114,75 @@ static const struct camss_subdev_resources csid_res_8x16[] = {
+@@ -114,6 +114,139 @@
  	},
  };
  
++/*
++ * MSM8939 has three CSIDs but a single VFE: every CSID is parented to
++ * VFE0 regardless of its id, so map all CSIDs onto VFE0 for power and
++ * clock control. (Upstream's vfe_parent_dev_ops maps CSID id -> VFE id,
++ * which leaves CSID1/2 unpowerable on single-VFE SoCs.)
++ */
++static int vfe0_parent_dev_ops_get(struct camss *camss, int id)
++{
++	return vfe_get(&camss->vfe[0]);
++}
++
++static int vfe0_parent_dev_ops_put(struct camss *camss, int id)
++{
++	vfe_put(&camss->vfe[0]);
++
++	return 0;
++}
++
++static void __iomem *
++vfe0_parent_dev_ops_get_base_address(struct camss *camss, int id)
++{
++	return camss->vfe[0].base;
++}
++
++static const struct parent_dev_ops vfe0_parent_dev_ops = {
++	.get = vfe0_parent_dev_ops_get,
++	.put = vfe0_parent_dev_ops_put,
++	.get_base_address = vfe0_parent_dev_ops_get_base_address
++};
++
 +/* MSM8939 has the same CSID generation as MSM8916 plus a third pipeline */
 +static const struct camss_subdev_resources csid_res_8x39[] = {
 +	/* CSID0 */
@@ -25,7 +53,7 @@ index d64985c..b355ba6 100644
 +		.interrupt = { "csid0" },
 +		.csid = {
 +			.hw_ops = &csid_ops_4_1,
-+			.parent_dev_ops = &vfe_parent_dev_ops,
++			.parent_dev_ops = &vfe0_parent_dev_ops,
 +			.formats = &csid_formats_4_1
 +		}
 +	},
@@ -47,7 +75,7 @@ index d64985c..b355ba6 100644
 +		.interrupt = { "csid1" },
 +		.csid = {
 +			.hw_ops = &csid_ops_4_1,
-+			.parent_dev_ops = &vfe_parent_dev_ops,
++			.parent_dev_ops = &vfe0_parent_dev_ops,
 +			.formats = &csid_formats_4_1
 +		}
 +	},
@@ -69,16 +97,50 @@ index d64985c..b355ba6 100644
 +		.interrupt = { "csid2" },
 +		.csid = {
 +			.hw_ops = &csid_ops_4_1,
-+			.parent_dev_ops = &vfe_parent_dev_ops,
++			.parent_dev_ops = &vfe0_parent_dev_ops,
 +			.formats = &csid_formats_4_1
 +		}
 +	},
 +};
 +
++/*
++ * MSM8939 VFE is VFE4.1: identical generation to MSM8916 (same hw_ops,
++ * same RDI formats) but with the PIX line instantiated (line_num = 4)
++ * so the CAMIF + demosaic path and the NV12 video node appear as
++ * msm_vfe0_pix / msm_vfe0_video3.
++ */
++static const struct camss_subdev_resources vfe_res_8x39[] = {
++	/* VFE0 */
++	{
++		.regulators = {},
++		.clock = { "top_ahb", "vfe0", "csi_vfe0",
++			   "vfe_ahb", "vfe_axi", "ahb" },
++		.clock_rate = { { 0 },
++				{ 50000000, 80000000, 100000000, 160000000,
++				  177780000, 200000000, 266670000, 320000000,
++				  400000000, 465000000 },
++				{ 0 },
++				{ 0 },
++				{ 0 },
++				{ 0 },
++				{ 0 },
++				{ 0 },
++				{ 0 } },
++		.reg = { "vfe0" },
++		.interrupt = { "vfe0" },
++		.vfe = {
++			.line_num = 4,
++			.hw_ops = &vfe_ops_4_1,
++			.formats_rdi = &vfe_formats_rdi_8x16,
++			.formats_pix = &vfe_formats_pix_8x16
++		}
++	}
++};
++
  static const struct camss_subdev_resources ispif_res_8x16 = {
  	/* ISPIF */
  	.clock = { "top_ahb", "ahb", "ispif_ahb",
-@@ -2380,6 +2449,18 @@ static const struct camss_resources msm8916_resources = {
+@@ -2380,6 +2513,18 @@
  	.link_entities = camss_link_entities
  };
  
@@ -87,17 +149,17 @@ index d64985c..b355ba6 100644
 +	.csiphy_res = csiphy_res_8x16,
 +	.csid_res = csid_res_8x39,
 +	.ispif_res = &ispif_res_8x16,
-+	.vfe_res = vfe_res_8x16,
++	.vfe_res = vfe_res_8x39,
 +	.csiphy_num = ARRAY_SIZE(csiphy_res_8x16),
 +	.csid_num = ARRAY_SIZE(csid_res_8x39),
-+	.vfe_num = ARRAY_SIZE(vfe_res_8x16),
++	.vfe_num = ARRAY_SIZE(vfe_res_8x39),
 +	.link_entities = camss_link_entities
 +};
 +
  static const struct camss_resources msm8996_resources = {
  	.version = CAMSS_8x96,
  	.csiphy_res = csiphy_res_8x96,
-@@ -2446,6 +2527,7 @@ static const struct camss_resources sc8280xp_resources = {
+@@ -2446,6 +2591,7 @@
  
  static const struct of_device_id camss_dt_match[] = {
  	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },

@@ -57,7 +57,7 @@ package silently.
 | `camss/camss-msm8939-driver.patch` + `camss/msm8939-camss-dtsi.patch` | `source=` + sha (auto-applied); camss on msm8939: driver glue + `msm8939.dtsi` DTI additions (Step 1/2) |
 | `camss/gcc-msm8939-camss-mclk.patch` | `source=` + sha; rewrites `ftbl_gcc_camss_mclk0_1_clk` — exact 19.2 MHz (front) / 24 MHz (rear) MCLK instead of the fork's miscomputed 17.78 MHz |
 | `camss/ov5693-bringup-retry.patch` | `source=` + sha; **bring-up only** (r52): ov5693 chip-id read retries ~2.5 s so the power-up window fits a full `i2cdetect` scan. Remove once the front camera passes verification |
-| `camera/ov13850.c` + `camera/ov13850.kconfig` | `source=` + sha; `prepare()` copies into `drivers/media/i2c/` + appends Makefile/Kconfig (r54): phoenix rear camera driver, mainline-style skeleton; global init = stock vendor table (libmmcamera_ov13850.so decode, 240 entries) with stream-critical regs on Rockchip values, per-mode regs = Rockchip 2112x1568@30 + 4224x3136@7.5; probe detect() has the same 2.5 s retry window as ov5693 (rear DT reg 0x36 is still a placeholder — address found by bus scan) |
+| `camera/ov13850.c` + `camera/ov13850.kconfig` | `source=` + sha; `prepare()` copies into `drivers/media/i2c/` + appends Makefile/Kconfig (r61 rework): phoenix rear camera driver, mainline-style skeleton; ALL register tables now verbatim from the stock sensor lib decode (libmmcamera_ov13850.so: 50 ms 0x0103 singleton + 217-entry init + 6 per-mode tables), 4-lane CSI2 with per-mode link freqs 300/320/600 MHz (exposes V4L2 LINK_FREQ/PIXEL_RATE per mode); probe detect() keeps the 2.5 s retry window (rear DT reg 0x36 = stock slave info decode) |
 | a5xx `MODULE_FIRMWARE` | inline `printf` append in `prepare()` (no repo file; keeps a420 fw refs in `msm.ko`) |
 
 ## 2. Device: `device/testing/device-qcom-msm8916`
@@ -127,3 +127,25 @@ lk2nd patch. Until then, everything above stays.
 镜像提醒: `./images/` 里的 boot-part/root-part pair 仍是 r66 安装时(~20:0x)的旧版，
 不含 r67 内核/v4/conf。要"随时可整刷"需重跑 `pmbootstrap install` 生成新 pair
 （rootfs UUID 重新随机化， **必须成对刷**）。
+
+## 8. camera 链: r61 首帧 + VFE 写主控几何修复 (2026-10-19)
+
+| repo file | pmaports change |
+|---|---|
+| `camss/camss-vfe41-frame-based-geometry.patch` (new) | kernel pkgrel 68→69 (构建 #70 待用户构建): gen1 ops 可选 op `wm_set_frame_geometry`（仅 vfe-4-1 实现），RDI frame-based 补写 WR_BUFFER_CFG —— stock msm_isp40 的 frame-based 分支写、主线从不写（实测 0x0），导致流出的帧每 2KB 窗丢 1KB（50% 恒零字节）。目标值 2112x1568 pBAA = **0x014A61F3**（330 8B 组 \| 1567\|burst3；r60 旧值 0x029461F3 系 4B 字误推，作废） |
+| `camera/ov13850.c`（已在本机部署，本轮无改动） | 源已有 checksum 接线不变；r61 验证 init 对拍 215/216、m1 态 227/228（独差 AEC 0x350b） |
+| `msm8939-lenovo-phoenix.dts`（4-lane，已部署） | 运行时 DT 已核验 `data-lanes=<0 2 3 4>` 生效 |
+
+设备事故与铁律: camss MMIO 在 runtime-suspend 态裸读会总线 fault panic
+（r61e 两次 reboot 的根因）；**只允许中流读**（/dev/mem mmap，qmmio 已移除、
+busybox 无 devmem）。r61e/f 误用旧版 mediasetup 已重写并持久化。
+详见 CAMERA.md r61 设备轮条目。
+
+## 9. camera PIX (VFE ISP) r77: bayer demux 更正 + 伪 YUV 路线 (2026-10-20)
+
+| repo file | pmaports change |
+|---|---|
+| `camss/camss-vfe41-pix-bayer.patch` (new, repo 首次落地) | kernel pkgrel 73→**74**（构建 #75，待用户构建）: r76 的 PIX patch 全面改写为 stock HAL ground truth（从开源 mm-camera VFE40 ISP 源恢复: `camera-ref/stock-src/mm-camera/`，repo `bcyj/android_tools_leeco_msm8996` @ f242858a）。核心 3 点: (1) bayer demux **period=1**（原硬编码 3 是 YUV 值）+ 按 CFA 起始相位选 even/odd cfg（SBGGR10=BGBGBG → 0xCA/0x9C；GBRG 0xAC/0xC9；GRBG 0x9C/0xCA；RGGB 0xC9/0xAC）；(2) bayer 时 MODULE_CFG 清掉 CHROMA_UPSAMPLE(bit3)（stock 对 bayer 关闭该 YUV-only 块）→ 0x08800004，YUV 路径不变 0x0880000C；(3) demux 7-word 块补 0x430/0x434（3D R-image gains）=0。demux gain 语义改为 Q7 12-bit（0x80=1.0，上限 ~31.9x；设备实测线性放大 1.5x/2.88x 通过）。 |
+| 运行时 A/B 参数（免重编） | `demux_period`(0=auto)、`demux_even/odd`(原始 32 位)、`demux_gain0/1`(原始 32 位)、`pix_module_cfg`(0x18 全局覆盖)、`camif_width`(CAMIF pixels-per-line 覆盖)、`scale_in_div`(2=scaler 输入减半 → 2:1 水平放大)。全部在 **下一次 STREAMON** 才生效。 |
+| 预期波形（判据） | TP 彩条: U=CH1 变 B 图案 [255,0,255,0,...]、V=CH2 变 R 图案 [255,255,0,0,...]、U≠V；Y=G 全宽。若仍折叠 → `camif_width`/`scale_in_div` 二分。之后用户态 R=V,G=Y,B=U 重建彩色（工具 `camera-ref/tools/nv12_recon.py` + `routing_validator.py`）。 |
+| 编译验证 | 补丁在 `kernel-extract/ksrc-6.12.1` 上按 APKBUILD 顺序 driver→frame→pix 应用，`make M=drivers/media/platform/qcom/camss modules`（aarch64 cross-gcc 16.2）零告警通过；应用链与 pristine 副本双向验证干净。 |

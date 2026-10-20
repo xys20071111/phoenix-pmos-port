@@ -232,9 +232,14 @@
 /* ===== Cameras (Step 2: DTS wiring; rear needs the Step 3 driver) ===== */
 
 &camss {
-	/* port@0 -> csiphy0/csid0 (rear, 2-lane), port@1 -> csiphy1/csid1
-	 * (front, 2-lane). Lane numbering per qcom,msm8916-camss.yaml:
-	 * camss side 0/2 = physical indexes, sensor side 1/2 = logical. */
+	/* port@0 -> csiphy0/csid0 (rear, 4-lane: stock blob lane_mask 0x1f
+	 * + lane_assign 0x4320), port@1 -> csiphy1/csid1 (front, 2-lane).
+	 * Lane numbering per qcom,msm8916-camss.yaml (and our
+	 * qcom-msm8939-camss.yaml): data-lanes values are the PHY data-lane
+	 * indexes 0/2/3/4 (1 = clock lane); the sensor side uses logical
+	 * indexes 1..N. mainline csiphy-2ph-1-0 and csid-4-1 accept these
+	 * as-is (lane_mask 1<<pos; lane_assign nibbles = values).
+	 */
 	status = "okay";
 
 	ports {
@@ -247,7 +252,7 @@
 			#size-cells = <0>;
 
 			csiphy0_ep: endpoint {
-				data-lanes = <0 2>;
+				data-lanes = <0 2 3 4>;
 				remote-endpoint = <&ov13850_ep>;
 			};
 		};
@@ -270,13 +275,12 @@
 };
 
 &cci_i2c0 {
-	/* Rear: OV13850 (module sunny_q13v04b). reg 0x36 is a PLACEHOLDER:
-	 * the r52 powered-window scan proved 0x10 belongs to the FRONT
-	 * OV5693 (chip-id 0x5690 read over the shared CCI bus) and the rear
-	 * module never ACKs anywhere while its standby pin floats asleep.
-	 * Step 3's probe verdict decides the real rear address.
-	 * MCLK stays at the stock 24 MHz (the Step 3 driver must keep its
-	 * PLL tables in sync with this rate + 300 MHz link-freq). */
+	/* Rear: OV13850 (module sunny_q13v04b). reg 0x36 = stock slave info
+	 * (libmmcamera_ov13850.so i2c addr 0x6c in 8-bit form = 0x36 in
+	 * 7-bit). Bring-up caveat kept: the rear module never ACKs during
+	 * its standby window, so the driver's detect() still retries for
+	 * ~2.5 s. MCLK stays at the stock 24 MHz; the driver's per-mode
+	 * tables commit link freqs 300/320/600 MHz (4 lanes). */
 	ov13850: camera@36 {
 		compatible = "ovti,ov13850";
 		reg = <0x36>;
@@ -301,8 +305,14 @@
 
 		port {
 			ov13850_ep: endpoint {
-				link-frequencies = /bits/ 64 <300000000>;
-				data-lanes = <1 2>;
+				/* stock per-mode MIPI rates (4 lanes):
+				 * 300 MHz = HFR 60/90/120, 320 MHz = preview/
+				 * default_video (640 Mbps/lane), 600 MHz =
+				 * 4208x3120@30 (1.2 Gbps/lane). */
+				link-frequencies = /bits/ 64 <300000000
+								320000000
+								600000000>;
+				data-lanes = <1 2 3 4>;
 				remote-endpoint = <&csiphy0_ep>;
 			};
 		};

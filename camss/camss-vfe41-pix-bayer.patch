@@ -1,0 +1,384 @@
+--- a/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
+@@ -40,6 +40,16 @@
+ #define VFE_0_CORE_CFG_PIXEL_PATTERN_YCRYCB	0x5
+ #define VFE_0_CORE_CFG_PIXEL_PATTERN_CBYCRY	0x6
+ #define VFE_0_CORE_CFG_PIXEL_PATTERN_CRYCBY	0x7
++/*
++ * Raw bayer pixel patterns.  The encoding follows the downstream
++ * ISP_START_PIXEL_PATTERN enum (msmb_isp.h): RGRGRG=0, GRGRGR=1,
++ * BGBGBG=2, GBGBGB=3.  The upstream YUV patterns (0x4-0x7) continue
++ * the same sequence, which cross-checks the mapping.
++ */
++#define VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_RGRGRG	0x0
++#define VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_GRGRGR	0x1
++#define VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_BGBGBG	0x2
++#define VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_GBGBGB	0x3
+ 
+ #define VFE_0_IRQ_CMD			0x024
+ #define VFE_0_IRQ_CMD_GLOBAL_CLEAR	BIT(0)
+@@ -159,6 +169,7 @@
+ 
+ #define VFE_0_DEMUX_CFG				0x424
+ #define VFE_0_DEMUX_CFG_PERIOD			0x3
++#define VFE_0_DEMUX_CFG_PERIOD_BAYER		0x1
+ #define VFE_0_DEMUX_GAIN_0			0x428
+ #define VFE_0_DEMUX_GAIN_0_CH0_EVEN		(0x80 << 0)
+ #define VFE_0_DEMUX_GAIN_0_CH0_ODD		(0x80 << 16)
+@@ -175,6 +186,30 @@
+ #define VFE_0_DEMUX_ODD_CFG_PATTERN_YVYU	0xac9c
+ #define VFE_0_DEMUX_ODD_CFG_PATTERN_UYVY	0xc9ca
+ #define VFE_0_DEMUX_ODD_CFG_PATTERN_VYUY	0xcac9
++/*
++ * Raw bayer selector values, taken verbatim from the stock VFE40 demux block
++ * (mm-camera demux40.c demux_set_cfg_parms()).  For bayer input the demux
++ * runs with period=1, i.e. the selector words carry two nibbles; the two
++ * words split the CFA row pattern into the demux output channels
++ * ch0 even/odd (green phases), ch1 (blue) and ch2 (red).
++ * The values are ordered by the first-row CFA pattern.
++ */
++#define VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_BGBGBG	0xca
++#define VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_BGBGBG	0x9c
++#define VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_GBGBGB	0xac
++#define VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_GBGBGB	0xc9
++#define VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_GRGRGR	0x9c
++#define VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_GRGRGR	0xca
++#define VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_RGRGRG	0xc9
++#define VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_RGRGRG	0xac
++/*
++ * The demux register block spans seven consecutive words (0x424-0x43c);
++ * after the two regular gain words come the two 3D "R image" channel gain
++ * words.  The stock HAL programs the whole block and writes them zero for
++ * 2D sensors, while mainline never touches them: keep stock parity.
++ */
++#define VFE_0_DEMUX_R_GAIN_0			0x430
++#define VFE_0_DEMUX_R_GAIN_1			0x434
+ 
+ #define VFE_0_SCALE_ENC_Y_CFG			0x75c
+ #define VFE_0_SCALE_ENC_Y_H_IMAGE_SIZE		0x760
+@@ -601,19 +636,105 @@
+ 	vfe_reg_set(vfe, VFE_0_IRQ_MASK_1, irq_en1);
+ }
+ 
++/*
++ * Runtime overrides for the gen1 demux block.  All values are raw register
++ * words (0 = use the built-in value), so a device round can A/B them through
++ * /sys/module/qcom_camss/parameters/ without rebuilding the kernel.
++ *
++ *   demux_period   demux period field (0 = auto: 1 for raw bayer, 3 for the
++ *                  interleaved YUV422 formats); the selector words carry
++ *                  (period + 1) nibbles, so bayer needs 2 and YUV422 4
++ *   demux_even     DEMUX_EVEN_CFG word (0 = auto: per input format)
++ *   demux_odd      DEMUX_ODD_CFG word (0 = auto: per input format)
++ *   demux_gain0    raw 32-bit gain word 0 (0 = 0x00800080)
++ *   demux_gain1    raw 32-bit gain word 1 (0 = 0x00800080)
++ *
++ * Demux gains are unsigned Q7 values in 12-bit fields:
++ *   gain0 = ch0_even_gain[11:0] | ch0_odd_gain[11:0] << 16
++ *   gain1 = ch1_gain[11:0]      | ch2_gain[11:0]      << 16
++ * with ch0 = green even/odd phases, ch1 = blue and ch2 = red, so 0x80 is
++ * 1.0x and the 12-bit field tops out at about 31.9x.
++ */
++static uint demux_period;
++module_param_named(demux_period, demux_period, uint, 0644);
++static uint demux_even;
++module_param_named(demux_even, demux_even, uint, 0644);
++static uint demux_odd;
++module_param_named(demux_odd, demux_odd, uint, 0644);
++static uint demux_gain0;
++module_param_named(demux_gain0, demux_gain0, uint, 0644);
++static uint demux_gain1;
++module_param_named(demux_gain1, demux_gain1, uint, 0644);
++/*
++ * Full override for the VFE MODULE_CFG word (0 = automatic: the YUV path
++ * keeps demux + chroma-upsample + scale + crop, while raw bayer drops
++ * chroma-upsample because that block is YUV-only).  This allows A/B of
++ * module bits (bit2 demux, bit3 chroma upsample, bit4 demosaic, bit11 WB,
++ * bit13 color correction, bit14 RGB LUT, ...; see the stock ISP
++ * pipeline40 module-cfg packing) without a rebuild.  Enabling blocks that
++ * are not programmed may produce invalid data or violations, so it
++ * defaults to 0.
++ */
++static uint pix_module_cfg;
++module_param_named(pix_module_cfg, pix_module_cfg, uint, 0644);
++/*
++ * Diagnostic geometry knobs (0 = auto = current behaviour).  They exist to
++ * finish the bayer geometry investigation without another kernel rebuild and
++ * are expected to become unnecessary once that geometry is understood.
++ *
++ *   camif_width    CAMIF pixels-per-line override.  0 keeps width*2 (the
++ *                  YUV422 two-samples-per-pixel value); setting it to the
++ *                  sink width tests the hypothesis that a raw bayer PIX
++ *                  line carries one sample per pixel and that the current
++ *                  value makes one VFE line consume two sensor rows
++ *   scale_in_div   scaler input divisor.  0 keeps the YUV-style full-width
++ *                  input; 2 feeds the 2:1 half-rate bayer luma/chroma
++ *                  stream into the scaler (2:1 horizontal upscale) while
++ *                  keeping the programmed output geometry
++ *
++ * Both are sampled when a stream starts, so they must be changed with no
++ * stream active and latched by a fresh STREAMON.
++ */
++static uint camif_width;
++module_param_named(camif_width, camif_width, uint, 0644);
++static uint scale_in_div;
++module_param_named(scale_in_div, scale_in_div, uint, 0644);
++
+ static void vfe_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
+ {
+-	u32 val, even_cfg, odd_cfg;
+-
+-	writel_relaxed(VFE_0_DEMUX_CFG_PERIOD, vfe->base + VFE_0_DEMUX_CFG);
++	u32 val, period, even_cfg, odd_cfg;
+ 
+-	val = VFE_0_DEMUX_GAIN_0_CH0_EVEN | VFE_0_DEMUX_GAIN_0_CH0_ODD;
+-	writel_relaxed(val, vfe->base + VFE_0_DEMUX_GAIN_0);
+-
+-	val = VFE_0_DEMUX_GAIN_1_CH1 | VFE_0_DEMUX_GAIN_1_CH2;
+-	writel_relaxed(val, vfe->base + VFE_0_DEMUX_GAIN_1);
++	period = VFE_0_DEMUX_CFG_PERIOD;
+ 
+ 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++	case MEDIA_BUS_FMT_SBGGR12_1X12:
++	case MEDIA_BUS_FMT_SBGGR8_1X8:
++		period = VFE_0_DEMUX_CFG_PERIOD_BAYER;
++		even_cfg = VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_BGBGBG;
++		odd_cfg = VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_BGBGBG;
++		break;
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++	case MEDIA_BUS_FMT_SGBRG12_1X12:
++	case MEDIA_BUS_FMT_SGBRG8_1X8:
++		period = VFE_0_DEMUX_CFG_PERIOD_BAYER;
++		even_cfg = VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_GBGBGB;
++		odd_cfg = VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_GBGBGB;
++		break;
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++	case MEDIA_BUS_FMT_SGRBG12_1X12:
++	case MEDIA_BUS_FMT_SGRBG8_1X8:
++		period = VFE_0_DEMUX_CFG_PERIOD_BAYER;
++		even_cfg = VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_GRGRGR;
++		odd_cfg = VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_GRGRGR;
++		break;
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++	case MEDIA_BUS_FMT_SRGGB12_1X12:
++	case MEDIA_BUS_FMT_SRGGB8_1X8:
++		period = VFE_0_DEMUX_CFG_PERIOD_BAYER;
++		even_cfg = VFE_0_DEMUX_EVEN_CFG_PATTERN_BAYER_RGRGRG;
++		odd_cfg = VFE_0_DEMUX_ODD_CFG_PATTERN_BAYER_RGRGRG;
++		break;
+ 	case MEDIA_BUS_FMT_YUYV8_1X16:
+ 		even_cfg = VFE_0_DEMUX_EVEN_CFG_PATTERN_YUYV;
+ 		odd_cfg = VFE_0_DEMUX_ODD_CFG_PATTERN_YUYV;
+@@ -633,6 +754,27 @@
+ 		break;
+ 	}
+ 
++	if (demux_period)
++		period = demux_period;
++	writel_relaxed(period, vfe->base + VFE_0_DEMUX_CFG);
++
++	val = demux_gain0 ? demux_gain0 :
++		(VFE_0_DEMUX_GAIN_0_CH0_EVEN | VFE_0_DEMUX_GAIN_0_CH0_ODD);
++	writel_relaxed(val, vfe->base + VFE_0_DEMUX_GAIN_0);
++
++	val = demux_gain1 ? demux_gain1 :
++		(VFE_0_DEMUX_GAIN_1_CH1 | VFE_0_DEMUX_GAIN_1_CH2);
++	writel_relaxed(val, vfe->base + VFE_0_DEMUX_GAIN_1);
++
++	/* Seven-word demux block: keep the 3D R-image gains at stock value 0. */
++	writel_relaxed(0, vfe->base + VFE_0_DEMUX_R_GAIN_0);
++	writel_relaxed(0, vfe->base + VFE_0_DEMUX_R_GAIN_1);
++
++	if (demux_even)
++		even_cfg = demux_even;
++	if (demux_odd)
++		odd_cfg = demux_odd;
++
+ 	writel_relaxed(even_cfg, vfe->base + VFE_0_DEMUX_EVEN_CFG);
+ 	writel_relaxed(odd_cfg, vfe->base + VFE_0_DEMUX_ODD_CFG);
+ }
+@@ -641,13 +783,17 @@
+ {
+ 	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+ 	u32 reg;
+-	u16 input, output;
++	u16 input, output, input_width;
+ 	u8 interp_reso;
+ 	u32 phase_mult;
+ 
++	input_width = line->fmt[MSM_VFE_PAD_SINK].width;
++	if (scale_in_div == 2 && input_width >= 2)
++		input_width /= 2;
++
+ 	writel_relaxed(0x3, vfe->base + VFE_0_SCALE_ENC_Y_CFG);
+ 
+-	input = line->fmt[MSM_VFE_PAD_SINK].width;
++	input = input_width;
+ 	output = line->compose.width;
+ 	reg = (output << 16) | input;
+ 	writel_relaxed(reg, vfe->base + VFE_0_SCALE_ENC_Y_H_IMAGE_SIZE);
+@@ -669,7 +815,7 @@
+ 
+ 	writel_relaxed(0x3, vfe->base + VFE_0_SCALE_ENC_CBCR_CFG);
+ 
+-	input = line->fmt[MSM_VFE_PAD_SINK].width;
++	input = input_width;
+ 	output = line->compose.width / 2;
+ 	reg = (output << 16) | input;
+ 	writel_relaxed(reg, vfe->base + VFE_0_SCALE_ENC_CBCR_H_IMAGE_SIZE);
+@@ -772,9 +918,29 @@
+ 
+ static void vfe_set_camif_cfg(struct vfe_device *vfe, struct vfe_line *line)
+ {
+-	u32 val;
++	u32 val, pixels_per_line;
+ 
+ 	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++	case MEDIA_BUS_FMT_SBGGR12_1X12:
++	case MEDIA_BUS_FMT_SBGGR8_1X8:
++		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_BGBGBG;
++		break;
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++	case MEDIA_BUS_FMT_SGBRG12_1X12:
++	case MEDIA_BUS_FMT_SGBRG8_1X8:
++		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_GBGBGB;
++		break;
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++	case MEDIA_BUS_FMT_SGRBG12_1X12:
++	case MEDIA_BUS_FMT_SGRBG8_1X8:
++		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_GRGRGR;
++		break;
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++	case MEDIA_BUS_FMT_SRGGB12_1X12:
++	case MEDIA_BUS_FMT_SRGGB8_1X8:
++		val = VFE_0_CORE_CFG_PIXEL_PATTERN_BAYER_RGRGRG;
++		break;
+ 	case MEDIA_BUS_FMT_YUYV8_1X16:
+ 		val = VFE_0_CORE_CFG_PIXEL_PATTERN_YCBYCR;
+ 		break;
+@@ -792,11 +958,13 @@
+ 
+ 	writel_relaxed(val, vfe->base + VFE_0_CORE_CFG);
+ 
+-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2;
++	pixels_per_line = camif_width ? camif_width :
++			  line->fmt[MSM_VFE_PAD_SINK].width * 2;
++	val = pixels_per_line;
+ 	val |= line->fmt[MSM_VFE_PAD_SINK].height << 16;
+ 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_FRAME_CFG);
+ 
+-	val = line->fmt[MSM_VFE_PAD_SINK].width * 2 - 1;
++	val = pixels_per_line - 1;
+ 	writel_relaxed(val, vfe->base + VFE_0_CAMIF_WINDOW_WIDTH_CFG);
+ 
+ 	val = line->fmt[MSM_VFE_PAD_SINK].height - 1;
+@@ -833,10 +1001,25 @@
+ 
+ static void vfe_set_module_cfg(struct vfe_device *vfe, u8 enable)
+ {
+-	u32 val = VFE_0_MODULE_CFG_DEMUX |
+-		  VFE_0_MODULE_CFG_CHROMA_UPSAMPLE |
+-		  VFE_0_MODULE_CFG_SCALE_ENC |
+-		  VFE_0_MODULE_CFG_CROP_ENC;
++	u32 val;
++
++	if (pix_module_cfg) {
++		val = pix_module_cfg;
++	} else if (vfe->is_bayer) {
++		/*
++		 * The chroma-upsample block is a YUV cositing block only; the
++		 * stock ISP pipeline disables it for bayer input and keeps
++		 * only demux, scale and crop for the raw (pseudo-YUV) path.
++		 */
++		val = VFE_0_MODULE_CFG_DEMUX |
++		      VFE_0_MODULE_CFG_SCALE_ENC |
++		      VFE_0_MODULE_CFG_CROP_ENC;
++	} else {
++		val = VFE_0_MODULE_CFG_DEMUX |
++		      VFE_0_MODULE_CFG_CHROMA_UPSAMPLE |
++		      VFE_0_MODULE_CFG_SCALE_ENC |
++		      VFE_0_MODULE_CFG_CROP_ENC;
++	}
+ 
+ 	if (enable)
+ 		writel_relaxed(val, vfe->base + VFE_0_MODULE_CFG);
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -202,6 +202,19 @@
+ 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
+ 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8, V4L2_PIX_FMT_NV61, 1,
+ 	  PER_PLANE_DATA(0, 1, 1, 1, 2, 8) },
++	/*
++	 * Raw bayer sinks for the PIX line: the gen1 demux path produces the
++	 * pseudo-YUV stream (luma = green phases, U = blue, V = red) that is
++	 * written out as NV12 for userspace reconstruction.
++	 */
++	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10, V4L2_PIX_FMT_NV12, 1,
++	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
++	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10, V4L2_PIX_FMT_NV12, 1,
++	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
++	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10, V4L2_PIX_FMT_NV12, 1,
++	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
++	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10, V4L2_PIX_FMT_NV12, 1,
++	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+ };
+ 
+ static const struct camss_format_info formats_pix_8x96[] = {
+--- a/drivers/media/platform/qcom/camss/camss-vfe.h
++++ b/drivers/media/platform/qcom/camss/camss-vfe.h
+@@ -161,6 +161,8 @@
+ 	struct camss_video_ops video_ops;
+ 	struct device *genpd;
+ 	struct device_link *genpd_link;
++	/* sink input is a raw bayer format (PIX module set differs) */
++	bool is_bayer;
+ };
+ 
+ struct camss_subdev_resources;
+--- a/drivers/media/platform/qcom/camss/camss-vfe-gen1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-gen1.c
+@@ -165,6 +165,27 @@
+ 	vfe->res->hw_ops->reg_update(vfe, container_of(output, struct vfe_line, output)->id);
+ }
+ 
++static bool vfe_line_is_bayer(struct vfe_line *line)
++{
++	switch (line->fmt[MSM_VFE_PAD_SINK].code) {
++	case MEDIA_BUS_FMT_SBGGR8_1X8:
++	case MEDIA_BUS_FMT_SGBRG8_1X8:
++	case MEDIA_BUS_FMT_SGRBG8_1X8:
++	case MEDIA_BUS_FMT_SRGGB8_1X8:
++	case MEDIA_BUS_FMT_SBGGR10_1X10:
++	case MEDIA_BUS_FMT_SGBRG10_1X10:
++	case MEDIA_BUS_FMT_SGRBG10_1X10:
++	case MEDIA_BUS_FMT_SRGGB10_1X10:
++	case MEDIA_BUS_FMT_SBGGR12_1X12:
++	case MEDIA_BUS_FMT_SGBRG12_1X12:
++	case MEDIA_BUS_FMT_SGRBG12_1X12:
++	case MEDIA_BUS_FMT_SRGGB12_1X12:
++		return true;
++	default:
++		return false;
++	}
++}
++
+ static int vfe_enable_output(struct vfe_line *line)
+ {
+ 	struct vfe_device *vfe = to_vfe(line);
+@@ -247,6 +268,14 @@
+ 		vfe->ops_gen1->wm_enable(vfe, output->wm_idx[0], 1);
+ 		vfe->ops_gen1->bus_reload_wm(vfe, output->wm_idx[0]);
+ 	} else {
++		/*
++		 * The gen1 module enable word differs for raw bayer input: the
++		 * chroma-upsample block is YUV-only, so the stock ISP pipeline
++		 * drops it for bayer.  Record the input class for the hw-ops
++		 * module-enable callback below.
++		 */
++		vfe->is_bayer = vfe_line_is_bayer(line);
++
+ 		ub_size /= output->wm_num;
+ 		for (i = 0; i < output->wm_num; i++) {
+ 			vfe->ops_gen1->set_cgc_override(vfe, output->wm_idx[i], 1);
