@@ -1690,3 +1690,23 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
 - 设备轮计划：① 前摄 auto → 看 total/ECC/CRC/未映射头计数 → 按决策树逐项 A/B；
   ② 后摄 B2 默认生效后，重拍 Stage-A/B 对比（显式 `pix_full_isp=0`）与静态画面
   实拍；③ BLC 保持关闭。
+
+### 10. 前摄根因定位（r81-F，kernel #78）
+
+- 用 #78 的 CSID 数据面计数器拿到决定性证据（前摄 TP 流、传感器确认在出流）：
+  - CSID IRQ_MASK=0x800、IRQ_STATUS=0x28000055（=r68d 同一状态），ECC/CRC 计数 0
+  - **`unmapped_hdr=0x120ca834`** 解码 {DT[31:24],WC[23:8],ECC[7:0]} ⇒ **DT=0x12、
+    WC=0x0CA8=3240 = 2592×10bit 正好一行、ECC=0x34**
+  - ⇒ **长包到达且长度正确，但 MIPI 数据类型是 0x12 而不是 RAW10 的 0x2B**，
+    CSID 的 LUT（只映射 0x2B）因此永不匹配 → 无 decode → 无帧；
+    VFE 只收到 SOF（与 F9 完全吻合）
+  - 传感器流中 i2c 读：0x0100=01、0x5e00=80（彩条）、VTS 2078、chip-id 正常、
+    MIPI 相关寄存器与 stock 一致，仅 0x4307=0x31（stock=0x30）1-bit 差异
+- **根因假设**：`0x4307` 是 MIPI 输出格式/数据类型选择位；主线模式表写 0x31，
+  stock 表写 0x30 → 改回 stock 值即可让 DT 变为 0x2B。
+- 验证手段：r81-F 的 CSID 计数器快照（total/ECC/CRC/unmapped/mapped/short/long
+  hdr/ftr + IRQ_MASK + raw IRQ status）足以在**无帧**情况下判定数据面问题，
+  是本轮关键 instrumentation。
+- 修复：`camss/ov5693-4307-stock.patch`（pkgrel 78 / kernel #79），
+  交叉编译零告警；上机后先看前端帧是否到达（RDI 3 帧 = 18,895,680 B），
+  再看 CSID 计数器 mapped_hdr 递增、unmapped 归零，然后正常拍照。
