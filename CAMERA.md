@@ -1592,3 +1592,34 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
   e.g. wall 重算 residual 0x009C008F）。
 - 证据：`camera-ref/frames/r78/final/11b_PAIR_PIX_A_blc_*`、
   `blc_before_after.txt`、`camera-ref/tools/r78_colour_report.md` §4b/4c。
+
+## 9. Stage-B 完整 ISP 实现（r80，pkgrel 76 / kernel #77 待构建）
+
+目标：从 demux-only 伪 YUV 升级到 VFE4.1 真正 ISP bayer 链，解决
+（1）色度质量（抽取混叠）与（2）未扣 BLC 的基底。
+
+- 补丁：`camss/camss-vfe41-pix-full-isp.patch`（增量于 pix-bayer v2，单文件
+  camss-vfe-4-1.c，370 行）。全部 runtime 门控、**默认关**（pix_full_isp=0 =
+  现行为）：
+  - `pix_full_isp`：0=off / 1=B1（demux+demosaic+WB）/ 2=B2（+CC+chromaEnh
+    RGB→YUV）/ 3=B2+linearization(BLC)
+  - 模块字：A 0x08800004/05（+BLC）、B1 0x08800814/15、B2 0x08822814/15
+    （CHROMA_UPSAMPLE 对 bayer 恒 0）
+  - demosaic：0x440 mix、0x518 interp WB、0x520 classifier 18 字、0x568
+    interp G（OV13850 chromatix 真值；4 处文档位域打包错误在实现中修正，
+    见 full_isp_stageB.md §10）
+  - WB 0x580（r72 默认 R/B/G=246/128/172，param 可调）；CC 0x5D0 TL84 矩阵
+    （Q7 含负值，identity 回退 `pix_cc_mode=0`）；chromaEnh/RGB→YUV 0x640
+    TL84 系数（c 0.5732/b −0.3178/a 0.5885/d −0.16/kcb=kcr=128）
+  - LINEARIZATION/BLC（`pix_linearization=1`）：17 字 knee @0x37C +
+    36 字 DMI LUT（bank0；新增 vfe_dmi_write32 写 0x910/0x914/0x91c），
+    OV13850 12-bit BLC {R,Gb,Gr,B}={69,66,65,69} 原值不除 4
+- 验证：全补丁链 patch -p1 干净、qcom-camss.ko 在 ksrc-6.12.1 交叉编译
+  零告警（含 W=1）。
+- 上机验证顺序（r79 设备轮）：B0 回归（pix_full_isp=0 应等于 P1 sha）→
+  BLC 暗场（Y/U/V≈0）→ B1 TP 不挂/不黑 → B2 TP 8 色真值（白 U≈V≈128 且
+  U≠V、红/蓝 Y 低、绿/黄/青 Y 高，demux gain 保持 1.0 避免 WB 双乘）→
+  B2+BLC 墙/场景。黑帧/花色时依次试 pix_cc_mode=0、pix_ce_mode=0、
+  pix_cc_qfactor=2，并抓 dmesg violation/overflow。
+- 注意：BLC 启用后旧白平衡字 0x0173010E（含基底标定）需重标定；
+  用户态 chroma offset 置 0。
