@@ -1,0 +1,370 @@
+--- a/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
+@@ -33,6 +33,12 @@
+ #define VFE_0_MODULE_CFG		0x018
+ #define VFE_0_MODULE_CFG_DEMUX			BIT(2)
+ #define VFE_0_MODULE_CFG_CHROMA_UPSAMPLE	BIT(3)
++#define VFE_0_MODULE_CFG_BLACK_LEVEL		BIT(0)
++#define VFE_0_MODULE_CFG_DEMOSAIC		BIT(4)
++#define VFE_0_MODULE_CFG_WHITE_BALANCE		BIT(11)
++#define VFE_0_MODULE_CFG_COLOR_CORRECT		BIT(13)
++#define VFE_0_MODULE_CFG_RGB_LUT		BIT(14)	/* needs DMI, unused */
++#define VFE_0_MODULE_CFG_CHROMA_ENHANCE		BIT(17)
+ #define VFE_0_MODULE_CFG_SCALE_ENC		BIT(23)
+ #define VFE_0_MODULE_CFG_CROP_ENC		BIT(27)
+ 
+@@ -218,6 +224,34 @@
+ #define VFE_0_DEMUX_R_GAIN_0			0x430
+ #define VFE_0_DEMUX_R_GAIN_1			0x434
+ 
++/*
++ * Stage-B colour blocks (VFE40 register map, same offsets as the downstream
++ * mm-camera headers: demosaic40_reg.h, wb40_reg.h, colorcorrect40_reg.h,
++ * chroma_enhan40_reg.h).
++ */
++#define VFE_0_DEMOSAIC_MIX_CFG			0x440
++#define VFE_0_DEMOSAIC_INTERP_WB_0		0x518
++#define VFE_0_DEMOSAIC_INTERP_WB_1		0x51c
++#define VFE_0_DEMOSAIC_CLASSIFIER		0x520
++#define VFE_0_DEMOSAIC_INTERP_G_0		0x568
++#define VFE_0_DEMOSAIC_INTERP_G_1		0x56c
++#define VFE_0_WB_CFG				0x580
++#define VFE_0_COLOR_CORRECT_CFG			0x5d0
++#define VFE_0_CHROMA_ENHANCE_CFG		0x640
++#define VFE_0_LINEARIZATION_CFG			0x37c	/* 17 words */
++
++/*
++ * VFE DMI engine (shared by the black-level, gamma and rolloff LUTs).
++ * 0x910 selects the memory bank with auto-increment, 0x914 is the word
++ * address, 0x91c takes 32-bit data (the vendor kernel writes DMI data at
++ * dmi_reg_offset 0x918 + 4).  0x918 itself is only used by 16-bit DMI.
++ */
++#define VFE_0_DMI_CFG				0x910
++#define VFE_0_DMI_ADDR				0x914
++#define VFE_0_DMI_DATA_LO			0x91c
++#define VFE_0_DMI_CFG_DEFAULT			0x100
++#define VFE_0_BLACK_LUT_BANK0			0x1
++
+ #define VFE_0_SCALE_ENC_Y_CFG			0x75c
+ #define VFE_0_SCALE_ENC_Y_H_IMAGE_SIZE		0x760
+ #define VFE_0_SCALE_ENC_Y_H_PHASE		0x764
+@@ -1097,10 +1131,292 @@
+ 	writel_relaxed(cmd, vfe->base + VFE_0_CAMIF_CMD);
+ }
+ 
++/*
++ * Stage-B full ISP for the raw-bayer PIX path (see
++ * camera-ref/tools/r76/full_isp_stageB.md).  Defaults keep the existing
++ * demux-only behaviour, so the parameters are all runtime-switchable and a
++ * fresh STREAMON latches them (the values are sampled by vfe_enable_output):
++ *
++ *   pix_full_isp      0 = demux only (default; existing pseudo-YUV path)
++ *                     1 = B1: demux + demosaic + white balance (hang bisection)
++ *                     2 = B2: + colour correction + chroma-enhance
++ *                         (real RGB -> YCbCr, NV12 output is true YUV)
++ *                     3 = B2 + linearization/BLC (module bit 0; see below)
++ *   pix_linearization 1 = enable the LINEARIZATION/BLC block independently of
++ *                     the colour stages (works on the demux-only Stage A path
++ *                     too: module word 0x08800005).  It subtracts the OV13850
++ *                     sensor black level {R,Gr,Gb,B}={69,66,65,69} (12-bit
++ *                     domain), which is the fix for the chroma pedestal.
++ *   pix_full_isp_cfg  raw MODULE_CFG word override for the bayer branch
++ *                     (0 = automatic: B1/B2 word chosen by pix_full_isp;
++ *                     pix_module_cfg above still takes precedence).  A
++ *                     raw word is used verbatim, so BLC bit0 must then be
++ *                     included by hand (e.g. 0x08822815 for B2+BLC)
++ *   pix_wb_gain_{r,g,b}  WB block gains, 9-bit Q7 (0x80 = 1.0); defaults are
++ *                     the r72 white-wall calibration (R=1.92, B=1.34, G=1.0)
++ *   pix_demosaic_interp  0 = demosaic interpolation normalisers derived from
++ *                     the WB gains (stock feeds the same AWB ratios to both),
++ *                     1 = unity (use if B1 looks over-bright/over-saturated)
++ *   pix_cc_mode       0 = identity colour matrix (debug), 1 = OV13850 TL84
++ *   pix_cc_qfactor    0..3 extra coefficient precision (coefQFactor); 0 keeps
++ *                     the stock encoding (C = round(c * 128))
++ *   pix_ce_mode       0 = generic BT.601-style matrix (neutral chroma),
++ *                     1 = OV13850 TL84 matrix (default, real device tuning)
++ *
++ * LINEARIZATION/BLC (module bit 0) needs two parts, both written here while
++ * the block is still disabled:
++ *   a) the 17-word knee-point block at 0x37c (plain writes), and
++ *   b) the 36-word curve LUT pushed through the VFE DMI engine (bank
++ *      BLACK_LUT_RAM_BANK0 = 0x1, DMI registers 0x910/0x914/0x91c) with a
++ *      small writel helper - no DMA, no bank toggling (static table).
++ * Enabling bit 0 without both parts would fetch an undefined bank (black or
++ * garbage), so they are always programmed together.  Note that the curve is
++ * in the 12-bit chromatix domain (10-bit << 2): the raw black levels are used
++ * as-is, never divided by 4.  DMI is only touched from the stream-on path
++ * (never per-frame, never in the ISR).
++ */
++static uint pix_full_isp;
++module_param_named(pix_full_isp, pix_full_isp, uint, 0644);
++static uint pix_full_isp_cfg;
++module_param_named(pix_full_isp_cfg, pix_full_isp_cfg, uint, 0644);
++static uint pix_wb_gain_r = 246;	/* 1.92 */
++static uint pix_wb_gain_g = 128;	/* 1.00 */
++static uint pix_wb_gain_b = 172;	/* 1.34 */
++module_param_named(pix_wb_gain_r, pix_wb_gain_r, uint, 0644);
++module_param_named(pix_wb_gain_g, pix_wb_gain_g, uint, 0644);
++module_param_named(pix_wb_gain_b, pix_wb_gain_b, uint, 0644);
++static uint pix_demosaic_interp;
++module_param_named(pix_demosaic_interp, pix_demosaic_interp, uint, 0644);
++static uint pix_cc_mode = 1;
++module_param_named(pix_cc_mode, pix_cc_mode, uint, 0644);
++static uint pix_cc_qfactor;
++module_param_named(pix_cc_qfactor, pix_cc_qfactor, uint, 0644);
++static uint pix_ce_mode = 1;
++module_param_named(pix_ce_mode, pix_ce_mode, uint, 0644);
++static uint pix_linearization;
++module_param_named(pix_linearization, pix_linearization, uint, 0644);
++
++static const u32 vfe_demosaic_classifier[] = {
++	0x80003066, 0x81003066, 0x82003066, 0x83003066, 0x84003066, 0x85003066,
++	0x86003066, 0x87003066, 0x88003066, 0x803fe066, 0x813fe066, 0x823fe066,
++	0x833fe066, 0x843fe066, 0x853fe066, 0x863fe066, 0x873fe066, 0x883fe066,
++};
++
++static const u32 vfe_cc_tl84[] = {
++	0x000000c3, 0x00000fe8, 0x00000fd6,
++	0x00000fac, 0x000000ee, 0x00000fe6,
++	0x00000fa8, 0x00000ff6, 0x000000e2,
++};
++
++static const u32 vfe_cv_tl84[] = {
++	0x0000004d, 0x00000096, 0x0000001d,
++	0x00000000, 0x00970097, 0x0faf0faf,
++	0x00930093, 0x0fd70fd7, 0x00800080,
++};
++
++static const u32 vfe_cv_generic[] = {
++	0x0000004d, 0x00000096, 0x0000001d,
++	0x00000000, 0x00800080, 0x00000000,
++	0x00800080, 0x00000000, 0x00800080,
++};
++
++
++/*
++ * OV13850 linearization/BLC (chromatix TL84 normal light; the six chromatix
++ * light-condition tables are identical).  Part A: 17 words at 0x37c, channel
++ * order R, Gb, B, Gr; each point-slope word is Pnext[11:0] | Pcur[27:16].
++ * Part B: 36-word DMI curve LUT (bank BLACK_LUT_RAM_BANK0), nine segments in
++ * the order R, Gr, Gb, B; each word is base[11:0] | Q9(delta)[17:0] << 12.
++ * The curve is "output = max(0, input - black level)" in the 12-bit
++ * chromatix domain: black level {R,Gr,Gb,B} = {69,66,65,69}.
++ */
++static const u32 vfe_ov13850_blc_cfg[] = {
++	0x00000000,	/* lutBankSel = 0 (BLACK_LUT_RAM_BANK0) */
++	0x00c20045, 0x01be0140, 0x0433023c, 0x0e070c10,	/* R  */
++	0x02380041, 0x06280430, 0x0a170820, 0x0e070c0f,	/* Gb */
++	0x023c0045, 0x062a0433, 0x0a190822, 0x0e070c10,	/* B  */
++	0x02390042, 0x06280431, 0x0a180820, 0x0e070c0f,	/* Gr */
++};
++
++static const u32 vfe_ov13850_blc_lut[] = {
++	0x00000000, 0x00000000, 0x00000000, 0x00000000,
++	0x00200000, 0x00200000, 0x00200000, 0x00200000,
++	0x0020007d, 0x002001f7, 0x002001f7, 0x002001f7,
++	0x002000fb, 0x002003ef, 0x002003ef, 0x002003ee,
++	0x00200179, 0x002005e6, 0x002005e7, 0x002005e5,
++	0x002001f7, 0x002007de, 0x002007df, 0x002007dd,
++	0x002003ee, 0x002009d6, 0x002009d6, 0x002009d4,
++	0x00200bcb, 0x00200bcd, 0x00200bce, 0x00200bcb,
++	0x00200dc2, 0x00200dc5, 0x00200dc6, 0x00200dc2,
++};
++
++/*
++ * Push a 32-bit DMI table into a VFE memory bank.  This is the same sequence
++ * the vendor kernel performs for VFE_WRITE_DMI_32BIT (msm_isp_util.c):
++ * select auto-increment + bank, address 0, stream the words to DMI_DATA_LO,
++ * then deselect the memory.  Static configuration only: no banking games, no
++ * calls while streaming or from the IRQ handler.
++ */
++static void vfe_dmi_write32(struct vfe_device *vfe, u32 bank,
++			    const u32 *tbl, int n)
++{
++	int i;
++
++	writel_relaxed(VFE_0_DMI_CFG_DEFAULT | bank,
++		       vfe->base + VFE_0_DMI_CFG);
++	writel_relaxed(0, vfe->base + VFE_0_DMI_ADDR);
++	wmb();
++	for (i = 0; i < n; i++)
++		writel_relaxed(tbl[i], vfe->base + VFE_0_DMI_DATA_LO);
++	wmb();
++	writel_relaxed(VFE_0_DMI_CFG_DEFAULT, vfe->base + VFE_0_DMI_CFG);
++	writel_relaxed(0, vfe->base + VFE_0_DMI_ADDR);
++}
++
++/* Linearization/BLC: curve LUT (DMI) first, then the knee-point block. */
++static void vfe_set_linearization_cfg(struct vfe_device *vfe)
++{
++	unsigned int i;
++
++	vfe_dmi_write32(vfe, VFE_0_BLACK_LUT_BANK0, vfe_ov13850_blc_lut,
++			ARRAY_SIZE(vfe_ov13850_blc_lut));
++
++	for (i = 0; i < ARRAY_SIZE(vfe_ov13850_blc_cfg); i++)
++		writel_relaxed(vfe_ov13850_blc_cfg[i],
++			       vfe->base + VFE_0_LINEARIZATION_CFG + 4 * i);
++}
++
++#define VFE_FULL_ISP_MODULE_CFG_B1	(VFE_0_MODULE_CFG_DEMUX | \
++					 VFE_0_MODULE_CFG_DEMOSAIC | \
++					 VFE_0_MODULE_CFG_WHITE_BALANCE | \
++					 VFE_0_MODULE_CFG_SCALE_ENC | \
++					 VFE_0_MODULE_CFG_CROP_ENC)
++#define VFE_FULL_ISP_MODULE_CFG_B2	(VFE_FULL_ISP_MODULE_CFG_B1 | \
++					 VFE_0_MODULE_CFG_COLOR_CORRECT | \
++					 VFE_0_MODULE_CFG_CHROMA_ENHANCE)
++
++/* Q7 ratio helper (a/b), used for the demosaic interpolation normalisers. */
++static u32 vfe_q7_ratio(u32 a, u32 b)
++{
++	if (!b)
++		return 0x80;
++
++	return DIV_ROUND_CLOSEST(a * 0x80, b);
++}
++
++/* Demosaic: mix config + interpolation normalisers + classifier + interp G. */
++static void vfe_set_demosaic_cfg(struct vfe_device *vfe)
++{
++	u32 rg, bg, gr, gb;
++	unsigned int i;
++
++	/* mix config: all fields 0 = stock defaults (cosited/abcc/flush off) */
++	vfe_reg_clr(vfe, VFE_0_DEMOSAIC_MIX_CFG, 0xfffffff0);
++
++	/*
++	 * Stock feeds the same AWB ratios to the demosaic interpolation
++	 * normalisers and to the white-balance block; pix_demosaic_interp=1
++	 * forces unity normalisers for A/B of a possible double gain.
++	 */
++	if (pix_demosaic_interp) {
++		rg = bg = gr = gb = 0x80;
++	} else {
++		rg = vfe_q7_ratio(pix_wb_gain_r, pix_wb_gain_g);
++		bg = vfe_q7_ratio(pix_wb_gain_b, pix_wb_gain_g);
++		gr = vfe_q7_ratio(pix_wb_gain_g, pix_wb_gain_r);
++		gb = vfe_q7_ratio(pix_wb_gain_g, pix_wb_gain_b);
++	}
++	writel_relaxed((rg & 0x1ff) | ((bg & 0x1ff) << 15),
++		       vfe->base + VFE_0_DEMOSAIC_INTERP_WB_0);
++	writel_relaxed((gr & 0x1ff) | ((gb & 0x1ff) << 15),
++		       vfe->base + VFE_0_DEMOSAIC_INTERP_WB_1);
++
++	for (i = 0; i < ARRAY_SIZE(vfe_demosaic_classifier); i++)
++		writel_relaxed(vfe_demosaic_classifier[i],
++			       vfe->base + VFE_0_DEMOSAIC_CLASSIFIER + 4 * i);
++
++	writel_relaxed(0x0000ff00, vfe->base + VFE_0_DEMOSAIC_INTERP_G_0);
++	writel_relaxed(0x0001a020, vfe->base + VFE_0_DEMOSAIC_INTERP_G_1);
++}
++
++/* White balance: ch0 = G, ch1 = B, ch2 = R, 9-bit Q7 gains. */
++static void vfe_set_wb_cfg(struct vfe_device *vfe)
++{
++	u32 val = ((pix_wb_gain_r & 0x1ff) << 18) |
++		  ((pix_wb_gain_b & 0x1ff) << 9) |
++		  (pix_wb_gain_g & 0x1ff);
++
++	writel_relaxed(val, vfe->base + VFE_0_WB_CFG);
++}
++
++/* Colour correction: 12-bit signed coefficients, one per word (GBR order). */
++static void vfe_set_cc_cfg(struct vfe_device *vfe)
++{
++	u32 qf = pix_cc_qfactor & 0x3;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(vfe_cc_tl84); i++) {
++		u32 val;
++
++		if (pix_cc_mode)
++			val = (vfe_cc_tl84[i] << qf) & 0xfff;
++		else
++			val = (i % 4 == 0) ? ((0x80 << qf) & 0xfff) : 0;
++
++		writel_relaxed(val, vfe->base + VFE_0_COLOR_CORRECT_CFG + 4 * i);
++	}
++	writel_relaxed(0, vfe->base + VFE_0_COLOR_CORRECT_CFG + 4 * 9);
++	writel_relaxed(0, vfe->base + VFE_0_COLOR_CORRECT_CFG + 4 * 10);
++	writel_relaxed(0, vfe->base + VFE_0_COLOR_CORRECT_CFG + 4 * 11);
++	writel_relaxed(qf, vfe->base + VFE_0_COLOR_CORRECT_CFG + 4 * 12);
++}
++
++/* Chroma enhance / RGB->YUV: 9 words (chromatix TL84 or generic fallback). */
++static void vfe_set_chroma_enh_cfg(struct vfe_device *vfe)
++{
++	const u32 *tab = pix_ce_mode ? vfe_cv_tl84 : vfe_cv_generic;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(vfe_cv_tl84); i++)
++		writel_relaxed(tab[i],
++			       vfe->base + VFE_0_CHROMA_ENHANCE_CFG + 4 * i);
++}
++
++/* Stage-B block programming; called from vfe_set_module_cfg() before the
++ * module enable word is written (all writes latch at the final reg_update,
++ * so they can be grouped here; the module bits are still 0 at this point).
++ */
++static bool vfe_bayer_blc_enabled(void)
++{
++	return pix_linearization || pix_full_isp >= 3;
++}
++
++static void vfe_set_bayer_full_isp_cfg(struct vfe_device *vfe)
++{
++	if (pix_full_isp >= 1) {
++		vfe_set_demosaic_cfg(vfe);
++		vfe_set_wb_cfg(vfe);
++	}
++	if (pix_full_isp >= 2) {
++		vfe_set_cc_cfg(vfe);
++		vfe_set_chroma_enh_cfg(vfe);
++	}
++	if (vfe_bayer_blc_enabled())
++		vfe_set_linearization_cfg(vfe);
++}
++
+ static void vfe_set_module_cfg(struct vfe_device *vfe, u8 enable)
+ {
+ 	u32 val;
+ 
++	/*
++	 * Program the Stage-B colour blocks (and optional BLC) before
++	 * enabling their module bits (they latch at the reg_update at the end
++	 * of vfe_enable_output).
++	 */
++	if (enable && vfe->is_bayer && (pix_full_isp || pix_linearization))
++		vfe_set_bayer_full_isp_cfg(vfe);
++
+ 	if (pix_module_cfg) {
+ 		val = pix_module_cfg;
+ 	} else if (vfe->is_bayer) {
+@@ -1108,10 +1424,23 @@
+ 		 * The chroma-upsample block is a YUV cositing block only; the
+ 		 * stock ISP pipeline disables it for bayer input and keeps
+ 		 * only demux, scale and crop for the raw (pseudo-YUV) path.
++		 * pix_full_isp selects the full-ISP module set (B1/B2); a raw
++		 * word override is available for A/B without a rebuild.
+ 		 */
+-		val = VFE_0_MODULE_CFG_DEMUX |
+-		      VFE_0_MODULE_CFG_SCALE_ENC |
+-		      VFE_0_MODULE_CFG_CROP_ENC;
++		if (pix_full_isp_cfg) {
++			val = pix_full_isp_cfg;
++		} else {
++			if (pix_full_isp >= 2)
++				val = VFE_FULL_ISP_MODULE_CFG_B2;
++			else if (pix_full_isp >= 1)
++				val = VFE_FULL_ISP_MODULE_CFG_B1;
++			else
++				val = VFE_0_MODULE_CFG_DEMUX |
++				      VFE_0_MODULE_CFG_SCALE_ENC |
++				      VFE_0_MODULE_CFG_CROP_ENC;
++			if (vfe_bayer_blc_enabled())
++				val |= VFE_0_MODULE_CFG_BLACK_LEVEL;
++		}
+ 	} else {
+ 		val = VFE_0_MODULE_CFG_DEMUX |
+ 		      VFE_0_MODULE_CFG_CHROMA_UPSAMPLE |
