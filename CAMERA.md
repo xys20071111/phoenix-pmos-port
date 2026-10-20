@@ -1527,3 +1527,25 @@ pmaports 脚本 `/tmp/opencode/r76e.sh`,5 组 TP 彩条捕 + 白墙对照,
   CSID/CSIPHY/ISPIF stream-on 动态调试日志（dev_dbg，可动态开启）+ 运行时 lane
   覆写参数（csid_lane_assign/csid_lane_cnt/csid_core_ctrl1_lo、csiphy lane 位置/
   数量置换、ov5693 可选 stock-MIPI 写入开关），全部默认=当前行为。
+
+### 8.8 PIX 色度问题后续：chroma-upsample 反证 + 机制定位（r78c）
+
+- **运行时 A/B 反证**（`pix_module_cfg`，kernel #75 参数）：
+  - bayer 默认 `0x08800004`（demux|scale|crop）→ 正常出帧（REF_SC_CAL sha
+    `1a0c50b6…`，REF_SC_NG sha `87ca0f04…`）。
+  - 重新使能 CHROMA_UPSAMPLE `0x0880000C`（demux|chromaUpsample|scale|crop）→
+    **STREAMON 挂死**（场景/TP 两种都挂，看门狗保护重启）→ 主线对 bayer 关闭
+    bit3 是必要且正确的；该块不能作为色度修复手段。
+- **stock 源码复核（camss-auditor Appendix B）**：我们使能的模块集里
+  **不存在** 硬件色度 DC 偏移/增益项——demux gain 是纯 Q7 乘法
+  （FLOAT_TO_Q(7) 四舍五入，quantisation ≤0.4%），VFE40 里仅有的色度 DC 偏移
+  在 chroma_enhan（0x640, kcb/kcr + Y offset）与 colorcorrect（0x5D0, K0-K2），
+  这两个块在我们的 pseudo-YUV 路径里**未使能**（重置值不会注入）。
+  ⇒ 观测到的 +8.2/+11.4 色度基底与 U 形行偏的机制 = **demux gain 放大 B/R 黑电平
+  （G/luma 不放大）+ 固定逐通道增益乘上镜头 shading**（位置相关 chroma/luma 比），
+  而不是 ISP 寄存器级偏移。彻底解决需 Stage B 完整 ISP（demosaic/WB/CC/
+  chromaEnhan/RGB→YUV，参考 `camera-ref/tools/r76/full_isp_stageB.md`，
+  chromatix 真值 + 模块字 0x08822814）。
+- 结论：**当前 demux-only PIX 路径的成像质量到此为限**（彩色/路由正确，色度质量
+  不足）；可用的自然色彩成像 = RDI raw + 软件 ISP（`decode_ov13850.py`）。
+  Stage B 或用户态软件 ISP 产品化是后续两条路。
