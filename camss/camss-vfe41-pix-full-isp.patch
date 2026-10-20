@@ -54,13 +54,13 @@
  
 +/*
 + * Stage-B full ISP for the raw-bayer PIX path (see
-+ * camera-ref/tools/r76/full_isp_stageB.md).  Defaults keep the existing
-+ * demux-only behaviour, so the parameters are all runtime-switchable and a
-+ * fresh STREAMON latches them (the values are sampled by vfe_enable_output):
++ * camera-ref/tools/r76/full_isp_stageB.md).  pix_full_isp defaults to 2;
++ * 0 restores the legacy demux-only path.  All are runtime-switchable and
++ * a fresh STREAMON latches them (vfe_enable_output samples the values):
 + *
-+ *   pix_full_isp      0 = demux only (default; existing pseudo-YUV path)
++ *   pix_full_isp      0 = demux only (legacy pseudo-YUV path; 2 = default)
 + *                     1 = B1: demux + demosaic + white balance (hang bisection)
-+ *                     2 = B2: + colour correction + chroma-enhance
++ *                     2 = B2 (DEFAULT): + colour correction + chroma-enhance
 + *                         (real RGB -> YCbCr, NV12 output is true YUV)
 + *                     3 = B2 + linearization/BLC (module bit 0; see below)
 + *   pix_linearization 1 = enable the LINEARIZATION/BLC block independently of
@@ -96,7 +96,7 @@
 + * as-is, never divided by 4.  DMI is only touched from the stream-on path
 + * (never per-frame, never in the ISR).
 + */
-+static uint pix_full_isp;
++static uint pix_full_isp = 2;	/* B2 full ISP default, 0 = Stage A */
 +module_param_named(pix_full_isp, pix_full_isp, uint, 0644);
 +static uint pix_full_isp_cfg;
 +module_param_named(pix_full_isp_cfg, pix_full_isp_cfg, uint, 0644);
