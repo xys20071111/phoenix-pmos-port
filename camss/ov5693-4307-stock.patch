@@ -1,0 +1,11 @@
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -293,7 +293,7 @@
+ 	{CCI_REG8(0x4009), 0x10},
+ 	{CCI_REG8(0x4058), 0x00},
+ 	{CCI_REG8(0x4101), 0xb2},
+-	{CCI_REG8(0x4307), 0x31},
++	{CCI_REG8(0x4307), 0x30},
+ 	{CCI_REG8(0x4511), 0x05},
+ 	{CCI_REG8(0x4512), 0x01},
+ 	{CCI_REG8(0x481f), 0x30},
