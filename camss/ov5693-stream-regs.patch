@@ -1,0 +1,72 @@
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -21,6 +21,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/slab.h>
++#include <linux/string.h>
+ #include <linux/types.h>
+ 
+ #include <media/v4l2-cci.h>
+@@ -634,10 +635,61 @@
+ 	return ret;
+ }
+ 
++/*
++ * r83-F diagnostic: write arbitrary sensor registers at every stream start,
++ * after the global table and mode configuration, before 0x0100=1.  Format:
++ * comma separated REG=VAL pairs in hex, e.g. stream_regs=4300=0a,4307=31
++ * Empty (default) writes nothing.  Intended for narrowing the front-camera
++ * MIPI output-format problem without a rebuild; not for production.
++ */
++static char ov5693_stream_regs[512] = "";
++module_param_string(stream_regs, ov5693_stream_regs, sizeof(ov5693_stream_regs), 0644);
++
++static int ov5693_apply_stream_regs(struct ov5693_device *ov5693)
++{
++	char buf[512], *p, *tok;
++	int n = 0, ret = 0;
++
++	strscpy(buf, ov5693_stream_regs, sizeof(buf));
++	p = buf;
++	while ((tok = strsep(&p, ","))) {
++		unsigned int reg, val;
++
++		while (*tok == ' ')
++			tok++;
++		if (!*tok)
++			continue;
++		if (sscanf(tok, "%x=%x", &reg, &val) != 2) {
++			dev_warn(ov5693->dev,
++				 "r83-F stream_regs: bad token '%s'\n", tok);
++			continue;
++		}
++		ret = cci_write(ov5693->regmap, CCI_REG8(reg), (u8)val, NULL);
++		if (ret) {
++			dev_warn(ov5693->dev,
++				 "r83-F stream_regs: write 0x%04x=0x%02x failed\n",
++				 reg, val);
++			return ret;
++		}
++		dev_info(ov5693->dev,
++			 "r83-F stream_regs: wrote 0x%04x=0x%02x\n", reg, val);
++		n++;
++	}
++
++	return n;
++}
++
+ static int ov5693_enable_streaming(struct ov5693_device *ov5693, bool enable)
+ {
+ 	int ret = 0;
+ 
++	/* r83-F: runtime register overrides, applied before 0x0100=1 */
++	if (enable && ov5693_stream_regs[0]) {
++		ret = ov5693_apply_stream_regs(ov5693);
++		if (ret < 0)
++			return ret;
++	}
++
+ 	cci_write(ov5693->regmap, OV5693_SW_STREAM_REG,
+ 		  enable ? OV5693_START_STREAMING : OV5693_STOP_STREAMING,
+ 		  &ret);
