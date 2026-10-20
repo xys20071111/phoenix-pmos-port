@@ -1573,3 +1573,22 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
   色度抽取（无寄存器可修），只有 Stage-B demosaic 能根治**。
 - 后续（内核侧候选，未排期）：在 camss 里实现 LINEARIZATION/BLC 模块编程
   （用上述 OV13850 BLC 值）可从硬件上扣黑电平；或直接上 Stage-B 完整 ISP。
+
+### 8.10 用户态 BLC 校正落地（r78e）
+
+- `nv12_recon.py` 新增 **`--blc`**：按 chromatix BLC 常量
+  `{R,Gr,Gb,B}={69,65,66,69}`（12-bit）与**当前 demux 增益字**换算
+  `offset_Y=(Gr+Gb)/2/16·gG`、`offset_U=B_blc/16·gB`、`offset_V=R_blc/16·gR`
+  （`--blc-gains`/`--blc-consts`/`--gain1` 可覆盖）。对 `0x0173010E`：
+  Y−4.09 / U−9.10 / V−12.50，与实测梯子 4.54/8.22/11.38 及 U/V 基底比
+  0.7278 vs 0.7223（1%）吻合。
+- 重渲染（bilinear chroma + BLC + 逐帧灰世界）：aimed scene 平均
+  R/G/B 从 40.3/36.5/36.8（magenta）→ **36.4/36.4/36.4（近中性）**；
+  暗区紫色消除。**残余行状色度误差不被 BLC 影响**（R/G 行带摆动 14.2%）
+  → 确认属 demux-only 抽取混叠（§8.9），用户态只能 `--chroma-row-median`
+  掩盖，根治需 Stage-B demosaic。
+- **重要内核联动注意**：`0x0173010E` 是在"含基底"的数据上标定的；若未来内核
+  启用 BLC/linearization，须**重新标定 AWB 字**（post-BLC 白墙给出的字显著更低，
+  e.g. wall 重算 residual 0x009C008F）。
+- 证据：`camera-ref/frames/r78/final/11b_PAIR_PIX_A_blc_*`、
+  `blc_before_after.txt`、`camera-ref/tools/r78_colour_report.md` §4b/4c。
