@@ -1677,3 +1677,16 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
   （~3320/248）才合理，将来若启用需按 stock 做曝光/数字增益门控。
 - 待办：静态画面重拍以得到逐像素对齐的 Stage-A/B 对比与更干净的照片；
   把 `pix_full_isp` 编译默认改为 2（B2）待用户确认后随下次构建生效。
+
+### 9.3 内核默认值变更与最后一次诊断构建（pkgrel 77 / kernel #78）
+
+- `pix_full_isp` 编译默认 **0 → 2（B2 完整 ISP）**：新开流即输出真正 YCbCr 彩色
+  （TP 8/8 真值、墙中性、实拍可辨识）；需要旧 demux-only 伪 YUV 路径时运行时写
+  `pix_full_isp=0`（B0 回归脚本显式传 0，不受影响）。BLC 仍默认 0。
+- 同构建加入前摄 payload 可观测性补丁（`camss-front-payload-diag.patch`）：
+  CSID total/ECC/CRC/头计数/PIF MISR/IRQ_MASK/raw IRQ 快照（stream-on、+100ms、
+  stream-off）+ 4 个 gated stock 对齐 A/B（`csid_irq_mask`、`csid_short_pkt_reset`、
+  `csiphy1_settle`、`csiphy1_rev3_quirk`、`ispif_stock_init`），全部默认=现状。
+- 设备轮计划：① 前摄 auto → 看 total/ECC/CRC/未映射头计数 → 按决策树逐项 A/B；
+  ② 后摄 B2 默认生效后，重拍 Stage-A/B 对比（显式 `pix_full_isp=0`）与静态画面
+  实拍；③ BLC 保持关闭。
