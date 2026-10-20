@@ -1412,3 +1412,68 @@ pmaports 脚本 `/tmp/opencode/r76e.sh`,5 组 TP 彩条捕 + 白墙对照,
   gamma/rgbLUT 需 DMI，VFE4.1 主线无 DMI 管线，先跳过。
 - 前摄：真流无帧界（r68 系）仍冻结；r77 起用 stock CSID/ISPIF 源码对照诊断
   （`camera-ref/tools/front/front_cam_diagnosis.md`）。
+
+## 8. r78 设备轮：PIX 彩色通路上线（kernel #75 = pkgrel 74，patch v2）
+
+### 8.1 门禁与 P1 判定（TP 彩条，全部参数 auto）
+
+- kernel `#75 SMP PREEMPT Tue Oct 20 14:00:12 UTC 2026`；8 个参数节点齐备
+  （camif_width demux_even demux_gain0 demux_gain1 demux_odd demux_period
+  pix_module_cfg scale_in_div，全 0=auto）；dmesg 干净；无残留进程。
+- **P1 = NEW_MODEL（成功）**：`r77_cap2.sh P1 0 0 0 0 0 0 0 0 tp` →
+  4,967,424 B、无挂死，`NV12 2112x1568`；sha `a218c923…`。
+  - Y = **全宽相干 G**（264px 彩条 [11110000]，seam ratio 0.00，无 tiling、
+    无 2:1 垂直折叠、无 132px 半分辨率伪迹；8/8 对 RDI 真值，blend 0.998）
+  - U = **B**（132px 图案 [1,0,1,0,…]，blend 1.008，8/8）
+  - V = **R**（[1,1,0,0,…]，blend 1.002，8/8）
+  - U≠V（旧 `(B+R)/2` 签名彻底消失）
+- **P2（显式 demux_period=1）sha 与 P1 完全相同** → auto 路径正确。
+- **色度通路固有 0.5x**：P1 上 U/V on-level 恰为 128 = 255/2（Y 满幅），
+  由 GCHK_1 交叉验证（g1 CH2=0x40：U 不变、V 精确减半）→ HW 侧用
+  demux_gain1 带 2x 基底补偿，或用户态 ×2。
+
+### 8.2 WB（demux gain 即 AWB 执行器）
+
+- WALL_A（g0=g1=1.0）：G(Y)=53.09、B(U)=25.18、R(V)=18.34。
+- 由 U=B/2、V=R/2 得 Q7 12-bit 字段：B 2.108x→0x10E、R 2.895x→0x173 →
+  `demux_gain1 = 0x0173010E`（g0 保持 0x00800080）。
+- **WALL_C 验证 = 中性**：Y 53.28 / U 52.35 / V 52.20（U/G .9825、V/G .9798，
+  U-V 0.15，0 削顶，重复帧 ±0.1）；微调字 `0x01750110` 达 .9888/.9876；
+  余下 ~1.1% 是 `floor(gain*value)` 截断（非增益误差），再叠加
+  波长相关 lens shading（需 LSC，用户态可预览校正）。
+- 结论：**内核无需 AWB 循环**——用户态灰世界算 gain 后写 demux_gain1 即硬件 AWB
+  （`nv12_recon.py --auto-wb` 已实现并回算出与人工完全相同的 0x0173010E）。
+
+### 8.3 彩色渲染与真实场景
+
+- TP 彩条渲染（R=V, G=Y, B=U，chroma×2）：8 条色相全对
+  （white/yellow/cyan/green/purple/red/blue/black）
+  → `camera-ref/frames/r78/recon/r78_P1_chroma2x_full.png`
+- 真实场景 SCENE_C（exp3320/gain248 + 校准增益）：Y/U/V=53.27/52.32/52.25，
+  渲染为中性墙帧 `…/recon/r78_SCENE_C_full.png`（手机当时对着无纹理暗墙，
+  画面为真实传感器图像：墙面细节、边缘物件、lens shading 均可见）。
+- SCENE_D（exp1500/gain32）近黑（Y mean 6.8）——传感器曝光被 VTS 上限
+  3324 限制，暗场景没有更亮档位；这是场景限制，不是通路问题。
+
+### 8.4 用户态工具（本轮定稿）
+
+- `camera-ref/tools/nv12_recon.py`：NV12→RGB（伪 YUV 模型 R=V,G=Y,B=U，
+  UV 交错自动检测，chroma×2，`--auto-wb` 灰世界 + 增益字输出，tonemap）。
+- `camera-ref/tools/routing_validator.py`：TP 路由判决（OLD/NEW/PARTIAL），
+  NEW_MODEL 判据 = 相干 G + U=B + V=R + U≠V，全 8 条真值对拍。
+- 两者都用 r78 证据自检通过（见 camera-ref/frames/r78/recon/）。
+
+### 8.5 剩余工作与结论
+
+- **后摄"能用"已达标**：主线 6.12.1 + patch v2 下，OV13850 经
+  csiphy0→csid0→ispif0→VFE0 PIX 输出可重建彩色 NV12（2112x1568，
+  ~30fps 链路能力不变）。限制：chroma 为 2x2（四分之一分辨率）、无
+  demosaic/CC/gamma/LSC（用户态可部分补偿）；Stage B 完整 ISP 参考已备
+  （`camera-ref/tools/r76/full_isp_stageB.md`，chromatix 真值）。
+- **前摄**：诊断完成（`camera-ref/tools/front/front_cam_diagnosis.md`）：
+  stock CSID/ISPIF 与主线逐寄存器等价，TG 测试只验证了 LUT/decode/ISPIF/VFE，
+  真实流独有的 lane 映射/phy_sel/CSIPHY 从未被验证。根因排序：R1 = OV5693
+  上游模式表缺 stock MIPI/输出寄存器（0x4806/0x4816/0x4831/0x5000-02/0x5046
+  等，且 19.2 vs 24MHz）；R2 = 前摄 lane 映射未校验。r78 起跑运行时
+  T1（sensor 测试图）× T2（i2c 回读对照）分裂实验。
+- 未动：13MP m0 全幅、HFR 档、AF(DW9761)/闪光灯(LM3646)。
