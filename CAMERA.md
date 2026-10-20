@@ -1504,3 +1504,26 @@ pmaports 脚本 `/tmp/opencode/r76e.sh`,5 组 TP 彩条捕 + 白墙对照,
 - 用户态工具已升级（`nv12_recon.py`）：`--auto-wb`（灰世界+增益字输出）、
   `--chroma-offset`、`--chroma-row-median`、`--chroma-cal`、`--lsc`、`--ccm`、
   `--chroma edge`、批量模式；残差行偏 ~13% + 亮边行爆发仍在（内核侧问题）。
+
+### 8.7 前摄诊断结论（r77-F，`camera-ref/tools/front/front_cam_diagnosis.md`）
+
+- **stock CSID/ISPIF 与主线逐寄存器等价**（CORE_CTRL_0/1 编码、LUT dt 0x2b、
+  CID_n_CFG=(decode<<4)|3、ISPIF INPUT_SEL/CID_MASK/INTF_CMD frame-boundary、
+  VFE RDI WM 几何）→ 不存在"stock 编程差异"型根因。
+- **r68e2 的 TG 通过是误导**：`csid_configure_stream()` 只在非 TG 分支写
+  CORE_CTRL_0（lane_cnt/lane_assign）与 CORE_CTRL_1（phy_sel），而 TG 又禁止
+  csiphy→csid 链接 → r68e2 只验证了 LUT/decode/ISPIF/VFE，**从未验证 lane 映射 /
+  phy_sel / CSIPHY**，而这些正是真流独有变量。
+- **r78 运行时分裂实验**：
+  - T2（i2c 回读 51 个寄存器）：35 匹配 / 8 失配；所有 R1"缺失 stock MIPI 写入"
+    （0x4806/4816/4831/4303-4315/5000-5002/5046/4837/4307）**全部与 stock 一致**；
+    失配仅为 19.2MHz PLL 表（0x3098-309b）、VTS、subsample、已知 1-bit 0x4307。
+    → **R1（传感器 MIPI 表）被证伪**。
+  - T1（sensor 彩条测试图）：0x5e00=0x80 已写入、0x0100=0x01 表明 sensor 在出流，
+    但 VFE 零帧（4s 看门狗 → 保护重启）→ 失败在 sensor 之后的链路：
+    **R2/R3 = CSIPHY lane 映射 / CSID CORE_CTRL**。
+- **下一步（需一次内核构建）**：`camera-ref/tools/front/proposed-front-instrumentation.patch`
+  （已交叉编译验证，补丁链 driver→ov5693-retry→frame→pix→front 零告警）：
+  CSID/CSIPHY/ISPIF stream-on 动态调试日志（dev_dbg，可动态开启）+ 运行时 lane
+  覆写参数（csid_lane_assign/csid_lane_cnt/csid_core_ctrl1_lo、csiphy lane 位置/
+  数量置换、ov5693 可选 stock-MIPI 写入开关），全部默认=当前行为。
