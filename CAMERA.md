@@ -1549,3 +1549,27 @@ pmaports 脚本 `/tmp/opencode/r76e.sh`,5 组 TP 彩条捕 + 白墙对照,
 - 结论：**当前 demux-only PIX 路径的成像质量到此为限**（彩色/路由正确，色度质量
   不足）；可用的自然色彩成像 = RDI raw + 软件 ISP（`decode_ov13850.py`）。
   Stage B 或用户态软件 ISP 产品化是后续两条路。
+
+### 8.9 色度基底定论：未扣除的 sensor 黑电平（BLC 未启用）
+
+stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强证据链：
+
+- 使能的 PIX 模块集里**不存在**任何色度 DC/scale 寄存器项（demux 28 字节块只有
+  period/gains/R-gain/cfg，无 offset；chroma-upsample 只有 1-bit cositing；WB 只有
+  3×9-bit Q7 增益；CC 的 K 偏移在 OV13850 chromatix 里=0 且 CC 未使能；
+  输出格式化主线 VFE4.1 不编程 io_format——最接近的 chroma DC 偏移只在
+  chroma_enhan 的 kcb/kcr=128，而该块 bit17=0 未使能，TP 黑条 U=0 亦反证）。
+- **+pedestal 机制 = 从未扣除的 sensor 黑电平**：stock bayer 恒开
+  LINEARIZATION（BLC）；OV13850 BLC = {R,Gr,Gb,B}={69,65,66,69}/12-bit
+  = {17.25,16.25,16.5,17.25}/10-bit（与实测 BL10=16.8 吻合）。我们的路径不做
+  BLC；chroma 通路 0.5x、用户态再 ×2，于是**同一黑电平在色度上被放大两倍**：
+  预测 Y=4.10/U=9.10/V=12.50（实测 4.54/8.22/11.38），**U/V 基底比
+  gB/gR=0.7278 vs 实测 0.7223（1% 吻合）**——DC 偏移不会随 CH1/CH2 增益比缩放，
+  未扣 BLC 会 ⇒ 定论。用户态修正必须按当前 demux 增益字换算（不能硬编码）。
+- **~0.93 斜率差不是 PIX 增益**：参考模型（BL 减后 clip）的非线性 + PIX/RDI 帧
+  未严格配准（block search 有 ~(32,-32) 原始像素的系统位移、相关仅 0.76-0.84）
+  + demux-only 色度是稀疏/抽取（B/R 每 4 像素一个站点 + 2-tap 平均 → 0.5x），
+  与全分辨率 RDI 模型对比必然有混叠残差 ⇒ **行状色度误差的根源是 demux-only
+  色度抽取（无寄存器可修），只有 Stage-B demosaic 能根治**。
+- 后续（内核侧候选，未排期）：在 camss 里实现 LINEARIZATION/BLC 模块编程
+  （用上述 OV13850 BLC 值）可从硬件上扣黑电平；或直接上 Stage-B 完整 ISP。
