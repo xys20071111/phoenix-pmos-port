@@ -1710,3 +1710,78 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
 - 修复：`camss/ov5693-4307-stock.patch`（pkgrel 78 / kernel #79），
   交叉编译零告警；上机后先看前端帧是否到达（RDI 3 帧 = 18,895,680 B），
   再看 CSID 计数器 mapped_hdr 递增、unmapped 归零，然后正常拍照。
+
+## 11. 当前状态总览（2026-10-21 早班快照）
+
+### 11.1 一句话状态
+
+- **后摄：Stage-B 完整 ISP 成功**，内核默认 `pix_full_isp=2`（B2），输出真正 BT.601 彩色
+  （TP 8/8 真值、墙中性、实拍可辨识）；真实场景照片已产出
+  （`camera-ref/frames/r79/final/07_SCENE_Bm_bt601_*`）。
+- **前摄：仍未出图**，但已定位到"传感器 MIPI 输出端"——CSID/ISPIF/CSIPHY 侧
+  逐字节等价 stock、帧同步(SOF)能到达 VFE，缺的是**像素长包**
+  （0x4307=0x30 时 CSID 完全收不到长包；=0x31 时收到 3240 字节包但数据类型
+  不受支持，且 `0x4300` 读回 **0xff 复位默认值**，疑为输出格式未配置）。
+- 其余未开始：13MP 全分辨率档、HFR、AF(DW9761)、闪光灯(LM3646)。
+
+### 11.2 内核/构建时间线（pmaports pkgrel → 设备 kernel）
+
+| pkgrel | 设备 kernel | 内容 | 状态 |
+|---|---|---|---|
+| 74 | #75 | pix-bayer v2（bayer demux 路由修复）| ✅ 已验证（P1 NEW_MODEL）|
+| 75 | #76 | 前摄 instrumentation（CSID/CSIPHY/ISPIF dev_info + lane 覆写）| ✅ 已验证（R2/R3 排除）|
+| 76 | #77 | 后摄 Stage-B 完整 ISP（B2 彩色）| ✅ 已验证（B0 回归/B2 8色/BLC 证据）|
+| 77 | #78 | 前摄 payload 可观测性（CSID 计数器）+ `pix_full_isp` 默认 0→2 | ✅ 已验证 |
+| 78 | #79 | ov5693 `0x4307=0x30`（stock 值）| ✅ 已验证（长包消失 → 输出格式问题实锤）|
+| 79 | **#80（待重启加载）** | ov5693 运行时寄存器覆写参数 `stream_regs` | 已构建+已 sideload，**未重启** |
+
+### 11.3 后摄（已完成部分）
+
+- B0 回归：`pix_full_isp=0` 帧与历史 P1 sha 完全相同。
+- B2：TP 8 色真值、U≠V、白点中性；真实场景（笔电屏幕）可出可辨识彩色照片；
+  标准 full-range BT.601 渲染；WB/CC 调参：默认 r72 WB 最中性、CC 保持 TL84。
+- BLC（linearization）：硬件路径已验证（电子暗场基座 4.0→0.0），但亮场景
+  增亮随曝光下降爆炸（+47%/+117%/+285%）且偏色 ⇒ **默认关闭**，需曝光门控后才可启用。
+- 用户态渲染：`camera-ref/tools/nv12_recon.py --colormode bt601`（Stage-B 标准 YUV）
+  与 `--colormode pseudo`（Stage-A 伪 YUV）。
+
+### 11.4 前摄（当前唯一阻塞项）
+
+已排除：R1"传感器 MIPI 寄存器表差异"（i2c 回读与 stock 一致）→ 后又发现 0x4307 差异并修复；
+R2 lane 映射（stock 传感器库 csi_lane_params = 0x4320/0x07 ≡ 我们 DT `<0 2>`）；
+R3 CSID CORE_CTRL_1（试 stock 0x F 无效）；CSID/ISPIF/CSIPHY 编程差异（逐字节等价）；
+stock MIPI 寄存器组（`stock_mipi_regs=1` 无效）；CSID 中断全开（无 ECC/CRC/short-packet）。
+
+当前证据链：
+| 配置 | CSID 观测 | 含义 |
+|---|---|---|
+| `0x4307=0x31`（主线原值） | `unmapped_hdr` 有值（DT 字段不受支持, WC=3240=一行像素）, total≈5, IRQ bit27 置位 | 传感器**在发像素长度包**但头部类型不对 |
+| `0x4307=0x30`（stock 值） | 长包完全消失，仅 FS/FE（total=3），IRQ bit27 消失 | 该位控制数据输出使能；DT 由别的寄存器决定 |
+| `csid_irq_mask=0xFFFFFFFF` | 无 ECC/CRC/短包事件 | 数据面在 CSID 之前就"没有像素包" |
+
+寄存器 dump 关键线索：`0x4300 = 0xff`（复位默认；OV 家族此寄存器是**输出格式/数据类型**控制），
+主线/stock 表都没写它 ⇒ 下一步用 `stream_regs` 逐个候选值（0x32/0x3f/0x30/0x00/0x0a…）
++ 分组二分 stock 表（PLL/时钟组、时序/crop 组、0x4002/0x4d00/0x5842 组）。
+
+### 11.5 证据与文档索引
+
+- 路由/彩色：`camera-ref/fames/r78/`、`frames/r79/`（含 `final/` 里程碑 PNG、
+  `scene/` 实拍、`pair/` A/B、`SHA256SUMS`）。
+- 前摄：#75-#79 各轮日志在 `frames/r81/`、`camera-ref/tools/r81/logs/`；
+  根因分析与寄存器对照：`camera-ref/tools/front/front_payload_diag.md`、
+  `front_cam_diagnosis.md`；bisect 脚本 `camera-ref/tools/r81/r81_front_bisect.sh`。
+- 报告：`camera-ref/tools/r78_colour_report.md`（Stage-A 彩色）、
+  `camera-ref/tools/r79_colour_report.md`（Stage-B 彩色）、
+  `camera-ref/tools/r76/full_isp_stageB.md`（Stage-B 寄存器规范，含 §8 BLC/§10 修正）。
+- 构建：`phoenix-pmos-port/BUILD.md` §8/§9 + `build-camera-v*.sh`。
+
+### 11.6 下一步（按序）
+
+1. **重启设备加载 kernel #80**（apk 已 sideload），确认 `stream_regs` 参数存在。
+2. 前摄 bisect（一次开流一个候选，失败约 35s 重启恢复；脚本已就绪）：
+   R1 复现 `4307=31` 签名 → R2a-e `0x4300` 候选 → R3 组合 → R4 stock PLL 组
+   → R5 时序/crop 组 → R6 其余组。任一次出现 `mapped_hdr>0` 或 3 帧抓取成功即命中。
+3. 若 bisect 全阴性：走"**全 stock 24MHz 表 + MCLK 切 24MHz**"的内核构建方案
+   （stock lib 表 257 条已解码在 `camera-ref/o5693-stdlib/stock_tables.c`，
+   需同时改 DTS `assigned-clock-rates` 与 endpoint `link-frequencies`）。
+4. 前摄修好后：13MP 全分辨率、HFR、AF、闪光灯；后摄 Stage-A 用户态产品化可选。
