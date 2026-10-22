@@ -15,8 +15,14 @@ PB1-770N 的基带是 MSM8939 集成 modem（MPSS.DPM.2.0.c12-00057-M8936FAAAANU
 - **通话不可用**：这颗 modem 固件**不支持 VoLTE**（stock/LineageOS 下同样
   打不了电话）—— 属固件限制，不是移植层问题（详见"通话为何搁置"）。
 - 移动数据：bam-dmux netdev 已注册（见下），调通与否未验证（stretch）。
-- Q6 媒体音频：卡换成 `msm8916`（MultiMedia1..4 + CS-Voice），播放链路本身
-  需要复测（UCM/混音器从 direct-LPASS 迁移未验证，见"后续可做"）。
+- Q6 媒体音频：卡换成 `msm8916`（MultiMedia1..4 + CS-Voice）。2026-10-22:
+  UCM/混音器失配已定位并修复（卡名失配 + `RDAC2 MUX` 缺设定，改用
+  `soc-qcom-msm8916-ucm`，见 `BOOT-STATUS.md` "耳机声道解决"），待上机复测。
+
+## 使用OpenRC时必须手动设置开机启动的服务
+ - modemmanager
+ - rmtfs
+ - msm-modem-uim-selection
 
 ## 用户空间链
 
@@ -108,8 +114,11 @@ registered/home），不是移植缺陷。调试期间容易被误判成"modem �
 
 ## 后续可做
 
-- Q6 音频复测：`aplay`/PipeWire 播放（媒体）、录音；`msm8916-audio-init.sh`
-  的旧混音器集合对 Q6 卡还有没有效、通用 `soc-qcom-msm8916-ucm` 是否够用。
+- Q6 音频复测（播放链路已修, 待上机复测）：`msm8916-audio-init.sh` 卡名
+  已修 `phoenix`→`msm8916`、手写 `ucm2/phoenix` 已删并改用通用
+  `soc-qcom-msm8916-ucm`（device-8-r8, 见 `BOOT-STATUS.md` 2026-10-22 节）
+  —— 耳机"不分左右"根因即卡名失配 + `RDAC2 MUX` 缺设定。剩余：装包
+  复测播放/录音、通话音频（本固件无 VoLTE 仍无可验证场景）。
 - 移动数据（stretch）：`wwan0`（bam-dmux）走 QMI WDS bind → NM/MM bearer；
   上游 patch 文档口径是 Raw-IP only（Ethernet mode 对多数固件是坏的）。
 - GPS（`&gps_mem`/`memshare` 已使能，LOC/PDS 服务在 QRTR 里可见
