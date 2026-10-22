@@ -1,0 +1,134 @@
+--- a/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe-4-1.c
+@@ -1196,6 +1196,28 @@
+ static uint pix_linearization;
+ module_param_named(pix_linearization, pix_linearization, uint, 0644);
+ 
++/*
++ * Per-source calibration for the raw-bayer PIX path.  msm8939 routes both
++ * cameras through this single VFE's PIX line and the media controller
++ * decides at arm time which ISPIF line feeds it: "msm_ispif0" = rear
++ * (CSIPHY0/CSID0/OV13850), "msm_ispif1" = front (CSIPHY1/CSID1/OV5693).
++ * The sensors need different gain sets (OV5693 white-wall calibration
++ * 260/128/163 from r89) and the OV13850 TL84 colour matrix over-corrects
++ * the OV5693 (identity matrix there), so the armed link has to pick which
++ * set vfe_set_*_cfg() actually programs.  Only the sensor-dependent knobs
++ * are per-line; pix_full_isp/ce/interp/blc stay shared (both cameras run
++ * the same B2 pipeline).  All values remain runtime-tunable like the
++ * shared set, and stream-on latches them.
++ */
++static uint pix_front_wb_gain_r = 260;	/* 2.03 */
++static uint pix_front_wb_gain_g = 128;	/* 1.00 */
++static uint pix_front_wb_gain_b = 163;	/* 1.27 */
++module_param_named(pix_front_wb_gain_r, pix_front_wb_gain_r, uint, 0644);
++module_param_named(pix_front_wb_gain_g, pix_front_wb_gain_g, uint, 0644);
++module_param_named(pix_front_wb_gain_b, pix_front_wb_gain_b, uint, 0644);
++static uint pix_front_cc_mode;		/* 0 = identity matrix */
++module_param_named(pix_front_cc_mode, pix_front_cc_mode, uint, 0644);
++
+ static const u32 vfe_demosaic_classifier[] = {
+ 	0x80003066, 0x81003066, 0x82003066, 0x83003066, 0x84003066, 0x85003066,
+ 	0x86003066, 0x87003066, 0x88003066, 0x803fe066, 0x813fe066, 0x823fe066,
+@@ -1304,6 +1326,53 @@
+ 	return DIV_ROUND_CLOSEST(a * 0x80, b);
+ }
+ 
++/*
++ * Which ISPIF line is armed into the PIX sink pad right now (media
++ * controller link state, sampled on every stream-on)?  In this topology
++ * only ISPIF line source pads link into VFE line sink pads, and
++ * v4l2_get_subdevdata() on an ISPIF line subdev is its struct ispif_line.
++ * Line 0 = the CSIPHY0/CSID0 rear chain, line 1 = the CSIPHY1/CSID1 front
++ * chain (msm8939 wiring); no armed link (idle) falls back to the shared
++ * set, which changes nothing because no stream is being built either.
++ */
++static bool vfe_bayer_pix_is_front(struct vfe_device *vfe)
++{
++	struct media_pad *pad;
++	struct v4l2_subdev *sd;
++	struct ispif_line *iline;
++
++	pad = media_pad_remote_pad_first(
++			&vfe->line[VFE_LINE_PIX].pads[MSM_VFE_PAD_SINK]);
++	if (!pad || !pad->entity)
++		return false;
++
++	sd = media_entity_to_v4l2_subdev(pad->entity);
++	iline = v4l2_get_subdevdata(sd);
++
++	return iline && iline->id == 1;
++}
++
++/* Resolve the WB gain set for the currently armed PIX source chain. */
++static void vfe_bayer_wb_gains(struct vfe_device *vfe, unsigned int *r,
++			       unsigned int *g, unsigned int *b)
++{
++	if (vfe_bayer_pix_is_front(vfe)) {
++		*r = pix_front_wb_gain_r;
++		*g = pix_front_wb_gain_g;
++		*b = pix_front_wb_gain_b;
++	} else {
++		*r = pix_wb_gain_r;
++		*g = pix_wb_gain_g;
++		*b = pix_wb_gain_b;
++	}
++}
++
++/* Colour-matrix selection, per armed PIX source chain. */
++static uint vfe_bayer_cc_mode(struct vfe_device *vfe)
++{
++	return vfe_bayer_pix_is_front(vfe) ? pix_front_cc_mode : pix_cc_mode;
++}
++
+ /* Demosaic: mix config + interpolation normalisers + classifier + interp G. */
+ static void vfe_set_demosaic_cfg(struct vfe_device *vfe)
+ {
+@@ -1321,10 +1390,13 @@
+ 	if (pix_demosaic_interp) {
+ 		rg = bg = gr = gb = 0x80;
+ 	} else {
+-		rg = vfe_q7_ratio(pix_wb_gain_r, pix_wb_gain_g);
+-		bg = vfe_q7_ratio(pix_wb_gain_b, pix_wb_gain_g);
+-		gr = vfe_q7_ratio(pix_wb_gain_g, pix_wb_gain_r);
+-		gb = vfe_q7_ratio(pix_wb_gain_g, pix_wb_gain_b);
++		unsigned int r, g, b;
++
++		vfe_bayer_wb_gains(vfe, &r, &g, &b);
++		rg = vfe_q7_ratio(r, g);
++		bg = vfe_q7_ratio(b, g);
++		gr = vfe_q7_ratio(g, r);
++		gb = vfe_q7_ratio(g, b);
+ 	}
+ 	writel_relaxed((rg & 0x1ff) | ((bg & 0x1ff) << 15),
+ 		       vfe->base + VFE_0_DEMOSAIC_INTERP_WB_0);
+@@ -1342,9 +1414,11 @@
+ /* White balance: ch0 = G, ch1 = B, ch2 = R, 9-bit Q7 gains. */
+ static void vfe_set_wb_cfg(struct vfe_device *vfe)
+ {
+-	u32 val = ((pix_wb_gain_r & 0x1ff) << 18) |
+-		  ((pix_wb_gain_b & 0x1ff) << 9) |
+-		  (pix_wb_gain_g & 0x1ff);
++	unsigned int r, g, b;
++	u32 val;
++
++	vfe_bayer_wb_gains(vfe, &r, &g, &b);
++	val = ((r & 0x1ff) << 18) | ((b & 0x1ff) << 9) | (g & 0x1ff);
+ 
+ 	writel_relaxed(val, vfe->base + VFE_0_WB_CFG);
+ }
+@@ -1352,13 +1426,14 @@
+ /* Colour correction: 12-bit signed coefficients, one per word (GBR order). */
+ static void vfe_set_cc_cfg(struct vfe_device *vfe)
+ {
++	unsigned int cc_mode = vfe_bayer_cc_mode(vfe);
+ 	u32 qf = pix_cc_qfactor & 0x3;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(vfe_cc_tl84); i++) {
+ 		u32 val;
+ 
+-		if (pix_cc_mode)
++		if (cc_mode)
+ 			val = (vfe_cc_tl84[i] << qf) & 0xfff;
+ 		else
+ 			val = (i % 4 == 0) ? ((0x80 << qf) & 0xfff) : 0;

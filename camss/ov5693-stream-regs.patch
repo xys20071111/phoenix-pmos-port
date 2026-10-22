@@ -8,7 +8,7 @@
  #include <linux/types.h>
  
  #include <media/v4l2-cci.h>
-@@ -634,10 +635,61 @@
+@@ -634,10 +635,71 @@
  	return ret;
  }
  
@@ -60,11 +60,21 @@
  {
  	int ret = 0;
  
-+	/* r83-F: runtime register overrides, applied before 0x0100=1 */
++	/* r84-F: runtime register overrides, applied before 0x0100=1 */
 +	if (enable && ov5693_stream_regs[0]) {
 +		ret = ov5693_apply_stream_regs(ov5693);
 +		if (ret < 0)
 +			return ret;
++		/*
++		 * r84-F BUGFIX (r83-F regression): apply_stream_regs returns the
++		 * number of pairs written (a positive count).  Passing that as
++		 * *err to cci_write makes v4l2-cci skip the SW_STREAM write
++		 * ("if (err && *err) return *err"), so the sensor never entered
++		 * streaming (observed 0x0100 stuck at 0 for every override).
++		 * Reset the error accumulator before the 0x0100 cci_write, same
++		 * lesson as the r61 ov13850 fix.
++		 */
++		ret = 0;
 +	}
 +
  	cci_write(ov5693->regmap, OV5693_SW_STREAM_REG,
