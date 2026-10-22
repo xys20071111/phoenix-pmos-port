@@ -156,3 +156,34 @@ busybox 无 devmem）。r61e/f 误用旧版 mediasetup 已重写并持久化。
 | `camss/ov5693-4307-stock.patch` (new, r82) | kernel pkgrel 77→**78**（构建 #79，待用户构建）: **前摄 MIPI 数据类型修复**。r81-F 计数器证明前摄长包 DT=0x12（非 RAW10 0x2B），payload 长度正确（WC=0xCA8=一行 2592x10b）→ CSID LUT 不映射、无帧。主线 ov5693.c 模式表 `0x4307=0x31`，stock 表 `0x4307=0x30`（唯一已知输出格式差异）→ 本补丁改 stock 值。验证：全链 apply 干净、qcom-camss.ko + ov5693.ko 零告警。 |
 | `camss/ov5693-stream-regs.patch` (new, r83) | kernel pkgrel 78→**79**（构建 #80，待用户构建）: **前摄运行时寄存器覆写**（纯诊断）。ov5693 新增 module param `stream_regs`（"REG=VAL,..." 十六进制，默认空=不变），在每次开流时、全局表/模式配置之后、0x0100=1 之前写入。背景：0x4307=0x30（stock 值）下 CSID 完全收不到长包；=0x31 时收到 3240 字节像素包但 DT 不受支持。用该参数可分组二分 stock 表寄存器/试 0x4300 取值，无需每次重建。验证：qcom-camss.ko + ov5693.ko 零告警。 |
 | `camss/ov5693-stream-regs.patch`（已构建） | kernel pkgrel 79 / **kernel #80**：**已构建 r79 apk 并成功 sideload 到设备，等待重启加载**。内容：ov5693 运行时寄存器覆写参数 `stream_regs`（"REG=VAL,..."，开流前写入，默认空=不变），用于前摄 MIPI 输出格式的免重建二分。pmaports 与已构建 apk 一致（512 字节缓冲、≤30 对；sha512 已核对 30 文件全部匹配）。 |
+| `camss/ov5693-stock-24m.patch` (r86) | kernel pkgrel 80→**81**（**kernel #82，已上机验证**）: 前摄切"全 stock 24MHz"。bisect r84-r85 全负 → 换 plan B：DTS MCLK1 19.2→24 MHz、endpoint link-frequencies 400 MHz（=800 Mbps/line，与 ov5693.c menu 对齐）、stock sunny_q5v41b 全表 stream-on 直接应用、FIXED_PPL 2672/PIXEL_RATE 159048960。上机后 RDI 前摄拍照闭环（R87/R88 真实场景 raw ✓，BGGR 软件渲染正常）。 |
+| `camss/camss-vfe41-per-line-cal.patch` (new, r89) | kernel pkgrel 81→**82**（构建 **#83**，待用户构建）: **双传感器 per-line Stage-B 定标**。r89 在 #82 上零内核改动打通前摄 PIX ISP（media-ctl 使能 ispif1→vfe0_pix，B2 出真彩 NV12 2592x1944；TP B2_PASS、前摄 WB 定标 260/128/163 → 墙 \|U-V\|=0.39；cc=0 恒等矩阵最中性且目视自然 → 用户定为前摄推荐默认）。但共享模块参数是 OV13850 调校、前后摄共享会产生"切换相机必须改 sysfs"的问题。本补丁在 stream-on 时读 PIX sink 的使能链接（media pad walk → ISPIF line id：0=后摄链、1=前摄链），按源链选择参数组：后摄/共享 = `pix_wb_gain_*`(246/128/172)+`pix_cc_mode=1`（不变），前摄 = **新参数 `pix_front_wb_gain_r/g/b`（默认 260/128/163）+ `pix_front_cc_mode`（默认 0 恒等）**；demosaic 插值归一化同步用 per-line 增益。两组均 0644 可运行时覆写；未使能链接（空闲）回退共享组；RDI/raw 路径完全不受影响。验证：6.12.1 基座按 APKBUILD 顺序 chain+新补丁 patch -p1 应用后**字节级可复现**（cmp 通过）；**已构建 #83 上机全验证**（r90A 前摄零 sysfs 直拍墙 \|U-V\|=1.94/2.00/1.95 三帧、R90C 后摄 full-band 彩条 rdi/pix 各路不混；r91 重启流 boot 闭环：campix 自启武装 RPIX + 默认曝光注册，双摄 boot 裸拍 mean 51.7 可用）。**pmaports pkgrel=82 = 设备 #83，一致。** |
+
+## 10. campix 包: `main/campix`（userland，r91 收官）
+
+英 sources of truth（双份，内容 cmp 收敛）：
+- 开发态：`camera-ref/tools/campix/`（`setup.sh`、`mg68h.py`、`camera` CLI、
+  `r91_cap.sh`、`r91probe.sh`、`APKBUILD`、init 单元、confd、README）。
+- 构建态：`~/.local/var/pmbootstrap/cache_git/pmaports/main/campix/`
+  （本体目录，全部 root 规范路径，未提交——待用户 git 决策）。
+
+| repo 文件路径 | 安装路径 |
+|---|---|
+| `setup.sh`、`mg68h.py` | `/usr/lib/camera/` |
+| `camera` | `/usr/bin/camera` |
+| `campix.initd` | `/etc/init.d/campix`（OpenRC，`rc-update add campix default`） |
+| `campix.service` | `/usr/lib/systemd/system/`（abuild 禁 /etc/systemd） |
+| `campix.confd` | `/etc/conf.d/campix`（`CAMPX_BOOT=rear|front`） |
+| `README` | `/usr/share/doc/campix/` |
+
+状态与收敛：
+- pmaports `pkgrel=1` **从未构建**（sha 已对齐 boot 默认曝光版 setup.sh）。
+- 设备 = `campix-0.1.0-r0` 安装 + 一次性 `sudo cp` 同值 setup.sh（语义
+  收敛、文件未收敛）；固件侧无残留（/usr/local 无内容）。
+- 收敛命令（用户终端，fido 交互）：
+  `pmbootstrap build campix && pmbootstrap sideload campix --arch aarch64`
+  （`--arch` 只收合法架构值，noarch 不是 sideload 合法值）；
+  build 后亦可交助手本地推送 `apk add`。
+- boot 行为：武装 RPIX/FPIX 全链 + **boot 默认曝光注册**（rear
+  exp3200/gain248、front 1600/248，驱动唤醒重放语义，无常电）；
+  细节与硬事实见 `CAMERA.md` §14/§15/§16，生态调查 §15。

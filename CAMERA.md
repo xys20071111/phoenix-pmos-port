@@ -1715,6 +1715,10 @@ stock 源码审计（`camera-ref/tools/r76/chroma_transfer_memo.md`）给出强�
 
 ### 11.1 一句话状态
 
+> **（快照已过期：本节反映的是 r86 前、#82 构建前的状态。r87/r88 前摄拍照闭环、
+> r89 前摄 ISP 全链 + #83 已构建上机验证、r90/r91 双摄收官。当前状态以
+> §16（2026-10-22 收官快照）为准。）**
+
 - **后摄：Stage-B 完整 ISP 成功**，内核默认 `pix_full_isp=2`（B2），输出真正 BT.601 彩色
   （TP 8/8 真值、墙中性、实拍可辨识）；真实场景照片已产出
   （`camera-ref/frames/r79/final/07_SCENE_Bm_bt601_*`）。
@@ -1785,3 +1789,406 @@ stock MIPI 寄存器组（`stock_mipi_regs=1` 无效）；CSID 中断全开（�
    （stock lib 表 257 条已解码在 `camera-ref/o5693-stdlib/stock_tables.c`，
    需同时改 DTS `assigned-clock-rates` 与 endpoint `link-frequencies`）。
 4. 前摄修好后：13MP 全分辨率、HFR、AF、闪光灯；后摄 Stage-A 用户态产品化可选。
+
+## 12. r89 前摄硬件 ISP 全链打通（零内核改动）+ #83 per-line 定标（2026-10-21 晚）
+
+### 12.1 重大发现：前摄吃 ISP 通路不需要任何新内核补丁
+
+上轮做完前摄 RDI 拍照（r87/r88）后，本轮把前摄切到 VFE4.1 **PIX 通路**吃完整
+B2 硬件 ISP。追踪 6.12 主线代码后确认**全部条件已在 #82 内核里**：
+
+1. **拓扑全连接网**：`camss_link_entities()` 对每条 ISPIF line 都建到每条 VFE
+   line（RDI0/1/2 + PIX）的链接，全部默认关闭、由用户态选通。8939 的 VFE 在
+   `vfe_res_8x39` 里 `line_num=4`（RDI0=video0 … PIX=video3 名为 `msm_vfe0_pix`）。
+2. **路由在使能链接时才定型**：`ispif_link_setup()` 在一个链接被使能的瞬间，
+   按它指向的 VFE line id 决定 `line->interface`（PIX0 或 RDI0/1/2）——
+   所以把 `msm_ispif1`（CSID1 链）使能到 `msm_vfe0_pix`，ISPIF line1 的硬件
+   路由就变成 PIX0，与后摄 line0 同一条路。 Pix sink pad 一带 `local` 已有
+   使能链接会返 EBUSY，所以换路必须先禁旧链再使新链（见 FPIX 链表顺序）。
+3. **CSID1 → PIX0 硬件可行**：`ispif_select_csid()` 的 PIX0 字段（INTF_INPUT_SEL
+   bits0-1）与 `ispif_select_clk_mux()` 的 CSI_PIX_CLK_MUX_SEL 字段都接受任意
+   CSID 号（前端 CSID 均已上电——msm8939-driver 补丁把三个 CSID 全挂 VFE0）。
+4. **bayer + Stage-B 补丁已在 #82**：pix-bayer（SBGGR10 沉式 sink + demux bayer
+   分支）与 pix-full-isp（B2 硬件 ISP，默认 `pix_full_isp=2`，只作用于 pix 通路）。
+   前摄 RDI 路径不受影响（is_bayer 只在 pix 分支置位）。
+
+⇒ **r89 全部 8 轮捕获零内核改动、零挂流**（流 3 帧约 0.3s，watchdog 4s 富余）。
+
+### 12.2 运行时资产（camera-ref/tools/r89/）
+
+| 资产 | 说明 |
+|---|---|
+| `mg68h.py`（主机主本 = 设备 `/tmp/mg68h.py`，sha `3c24c323…`） | 加 `FPIX` 模式：先释放后摄 PIX0/链与前摄 RDI0/1/2 链接（EBUSY 防护），再使能 `csiphy1→csid1→ispif1→msm_vfe0_pix`；SBGGR10 2592x1944 全链下发（pix sink 由此吃 ISP 链） |
+| `r89_front_fpix.sh`（设备 `/home/user/r89/`，sha `2a1fe013…`） | 一次一捕获 harness：knots full/lin/interp/cc/ce/ccq/cfg/modcfg/wbr/wbg/wbb/g0/g1/camifw/div + tp\|wall + CHECK 库存 + 挂流保护重启 + 恢复编译默认；#83 后 wbr/wbg/wbb/cc 键自动映射到 `pix_front_*`（存在才映射） |
+| `r89_bars.py`（主机） | 前摄 NV12 2592x1944 分析器：8 条 324px、B2_PASS 判据（Y 排序 + 彩条 \|U-V\|<1 计 0/6 + 8 条 nearest-ref d<40）、`--wall` 灰墙中性、`--png --rot90cw` 渲染；合成帧自测 8/8 d=0 |
+
+前摄 TP 真值（r86 raw 实测）：**8 条 W Y C G P R Bl K**、每条 324px、BGGR
+真值 B=[10101010]，G=[11110000]，R=[11001100]（与后摄同序；TP=2 Colour Bars）。
+
+### 12.3 r89 设备轮结果（全部 CAP_OK，无一挂流）
+
+| 轮 | 配置 | TP | 灰墙 (U,V) 帧2 | 结论 |
+|---|---|---|---|---|
+| F0 | B2 默认（cc=1、WB 246/128/172）| **B2_PASS**（7/8；G d42、P d40 = OV13850 CC 痕迹，符合预期）| — | 前PIX B2 出图成立，sha `c3c4589f…` |
+| F0w | wall exp1000 g248 | — | (130.6,125.1) | 偏暗（背光），青绿偏 |
+| F1b | exp1600 | — | (131.6,123.7) | 提亮后颜色细节正常（油画/条纹/肤色），蓝偏 \|U-V\|=7.9 |
+| F1c | wbb=157 | — | (127.3,123.5) | U 中性但 (U+V)/2=125.4 → 目视绿偏（**教训：\|U-V\| 小≠中性，还要看均值≈128**） |
+| **F1d** | **wbr=260 wbb=163** | — | **(128.7,129.1)**，\|U-V\|=0.39 | **前摄 WB 定标达成**，用户目视确认墙/天花板中性、油画色彩自然、肤色暖（sha `31ca8aaf…`） |
+| F2t | TP + 260/163 | B2_PASS（白条 U=122.9，TP 静态值固偏暖）| — | 判据不变（WB 对饱和条无影响） |
+| F2cc0 | **cc=0** + 260/163 | — | **(128.5,128.0)** | 三轮最中性；用户目视色彩自然（眼镜/T恤/油画/窗帘）→ **定 cc=0 为前摄推荐默认** |
+
+**前摄推荐组（#83 起即编译默认）**：`pix_full_isp=2`（B2）+ WB
+`260/128/163` + `pix_front_cc_mode=0`（恒等矩阵）+ `pix_ce_mode=1`（TL84 CE）。
+（后摄/共享组不变：246/128/172 + cc=1。）
+
+### 12.4 #83：per-line 定标补丁（`camss/camss-vfe41-per-line-cal.patch`）
+
+动机：共享参数是 OV13850 调校，换相机要改 sysfs —— 用户定为内核级
+per-sensor 默认。设计：
+
+- **判别器**：`vfe_set_module_cfg()`（pix 分支）在 stream-on 时走 media pad
+  walk：`vfe->line[VFE_LINE_PIX]` sink pad 的使能链接 → ISPIF line subdev →
+  `struct ispif_line`（camss.h 已包含 camss-ispif.h，零 include 改动）→
+  `iline->id`（0=后摄链/共享、1=前摄链；无使能链接回退共享）。
+- **参数组**：WB 增益经 `vfe_bayer_wb_gains()` 解析（demosaic 插值归一化与
+  `vfe_set_wb_cfg` 同源）；CC 经 `vfe_bayer_cc_mode()`。新模块参数
+  `pix_front_wb_gain_r/g/b`（260/128/163）+ `pix_front_cc_mode`（0），
+  0644 可运行时覆写；`pix_full_isp/ce/interp/blc` 保持共享（两摄同管线级别）。
+- **范围**：全部只在 pix bayer 分支生效；RDI/raw 前摄不受影响；后摄行为与
+  #82 逐字节一致。
+- 验证：全链（driver→frame→pix-bayer→pix-full-isp→**per-line-cal**）
+  patch -p1 干净 + 字节级可复现（cmp）；**编译验证待用户构建**
+  （`pmbootstrap build`，pkgrel 81→82 = kernel #83；脚本
+  `build-camera-v10.sh`）。
+- **r90 上机判据**：1) 前摄 FPIX 捕获**不碰 sysfs** 直接拍 → 灰墙
+  \|U-V\|≤~2 且 cc=0 色彩自然（等价 F2cc0 但参数全自动）；
+  2) 后摄照拍 → 与 #82 行为一致（共享默认不变）。
+
+### 12.5 风险与未竟
+
+- 定标是**本机房光照**下的人工固定 WB（无 AWB/AEC 主线化），换光照会偏；
+  正路是解 `libchromatix_ov5693_common.so` 的台湾调校真值再校准（后补）。
+- CC=0 意为"不做传感器色域校正"，靠 CE 的通用 BT.601 矩阵上色；若后续觉得
+  色彩饱和度不足，可再 A/B TL84 vs 恒等（参数运行时可切，无需重建）。
+- 后摄 lens shading、13MP 全分辨率档、HFR、AF(DW9761)、闪光灯(LM3646) 仍开。
+
+### 12.6 证据路径
+
+- 帧：`camera-ref/frames/r89/`（F0/F0w/F1b/F1c/F1d/F2t/F2cc0 NV12 +
+  F1b/F1d/F2cc0 渲染 PNG）；原始帧设备侧 `/home/user/r89/`。
+- 日志：`camera-ref/tools/r89/logs/`（CHECK + 8 轮）。
+- Runbook（含结果矩阵 + 零改动论证）：`camera-ref/tools/r89/r89_runbook.md`。
+- 前摄 RDI 拍照轮（R86-R88）：`camera-ref/tools/r81/` runbook
+  （R86-F 收官结论 + r87/r88 拍照）、`frames/r81/bisect/`。
+
+## 13. 官方 chromatix 调色数据解码（libchromatix_ov5693_common.so，2026-10-21 深夜）
+
+### 13.1 方法：纯数据 ABI 走查（无反汇编器）
+
+固件 chromatix 库是纯数据 .so：仅导出 `load_chromatix`（12 B Thumb，返回静态
+实例指针）+ 一份 42 KB 的 `chromatix_VFE_common_type` 实例。解码即把 .data
+段按上游源码 ABI（`camera-ref/stock-src/mm-camera/hw/chromatix/` 的
+`chromatix.h` + `chromatix_common.h`，chromatix 0x301 rev 1）走查。
+
+- 解码器：`camera-ref/tools/chromatix/decode_chromatix_common.py`
+  （`uv run --with pycparser python decode_chromatix_common.py
+  <abi_dir> <path.so>`；cpp 预处理 → pycparser 解析 typedef 树 → 计算
+  ARM32 布局 → 按字段读 .data）。
+- 定位：`.data` VA 0x2000，实例基址 VA 0x2004（一个 0x2000 自指前缀字 +
+  u16 version/u8 compressed/u16 revision 版本头）。
+- 收敛验证：`sizeof(chromatix_VFE_common_type)=42044`，走查后
+  **tail=0**（实例 + 前缀字恰好吃满 .data 0xA440）——ABI 无错位的强证明。
+- 文本对位：与官方语料 `chromatix_ov13850_common.h`（同 ABI，不同调校代际）
+  逐 token 对位 **10704 = 10704 全一致**（值顺序与数量完全吻合），
+  以 ov13850 模板生成 `chromatix/ov5693/chromatix_ov5693_common.h`
+  （`camera-ref/tools/chromatix/gen_ov5693_header.py`，注释原文保留）。
+- 两个廉价修正：① pycparser 把 `unsigned short` 拆 token，须 join 全部
+  names；② 多行注释正则必须 `re.S`（版权横幅）。
+- 目标 .so：`ov13850-stdlib/ex/libchromatix_ov5693_common.so`
+  （47 124 B，sha256 e85d9a34…；ov13850_common 47 268 B 同 ABI 对照件）。
+
+### 13.2 前摄 OV5693 工厂真值（台湾调校）
+
+**BLC / Lineaization（6 表 ×4 通道）**
+
+- `control_linearization = 0`（工厂默认关闭本块控制；模块 cfg 决定）。
+- 低光触发：增益 **13.95× → 15.5×**，LuxIndex 359 → 404。
+- CCT 触发：A 段 3500 → 3200，D65 段 4300 → 4800（与 ov13850 相同——
+  平台公共值）。
+- **六张表（A/TL84/Day × lowlight/normal）完全相同**（工厂不区分光源/低光）。
+- **四通道黑电平（12bit 域）：R=63 GR=63 GB=65 B=65**（knee0 即黑电平；
+  knee1 = (4095−bl)/8+bl = 567 阶梯自洽验证通过）。
+- LUT 即"分段恒等"：bl 以下钳 0，bl 以上斜率 1（base 0,0,504,1008,…，
+  delta 全 1.0）→ 工厂 = 最简单减法 BLC。
+- 使用换算：VFE linearization 以 12bit 计（注释 12uQ0）；若在 10bit RAW
+  域接入需 ×4（63→15.75 等）。
+
+**Rolloff（lens shading 巨表，17×13 mesh ×4 通道）**
+
+- `control_rolloff = 0`；低光触发 增益 14.725→15.5、Lux 359→399；
+  A 触发 3850→3750、D65 触发 4500→4590；LED/Strobe 触发 1→7。
+- 表组：normal×3 光源 + lowlight×3 + golden_module×3（**全 1.0 占位**）
+  + LED×1 + Strobe×1（LED/Strobe = normal[2] 拷贝）。
+- 强度：normal 角点增益 2.67–3.10（≈62–68% 边角损失补正）、均值 1.38–1.51、
+  中心 1.35–1.38；lowlight 更缓（2.32–2.81）。
+- `mesh_rolloff_table_size` 头字段实测 130（真表）/ 221（golden 占位）。
+
+**LA 特效 LUT（5×64 float）**：backlit 有真实曲线（0.75→…），solarize/posterize
+等其余为占位——前摄价值低。
+
+**明确没有的**：本固件只为 OV5693 出了 common chromatix（linearization/
+rolloff/LA），**没有 per-mode（preview/snapshot/video）库** → 官方 AWB 增益、
+CC 矩阵、gamma 等 VFE 调色不可得（按 ov13850 例，这些住在 per-mode
+chromatix_VFE_type 里；固件库列表可证：`camera-ref/ov13850-stdlib/ex/`）。
+**r89 人工定标（260/128/163 + cc0）仍是前摄白平衡/色彩的操作性真值**；
+chromatix 的贡献是"黑电平"与"镜头阴影"两块未来可选（BLC 能力补强 /
+lens shading 支持）。
+
+### 13.3 证据路径
+
+- 全字段 dump：`camera-ref/tools/chromatix/ov5693_common_decode.txt`。
+- 生成头：`camera-ref/stock-src/mm-camera/hw/chromatix/ov5693/
+  chromatix_ov5693_common.h`。
+- 解码器/生成器：`camera-ref/tools/chromatix/{decode_chromatix_common.py,
+  gen_ov5693_header.py}`。
+- ABI 权威源：`camera-ref/stock-src/mm-camera/hw/chromatix/
+  {chromatix.h, chromatix_common.h}`；同代际对照语料
+  `…/ov13850/chromatix_ov13850_common.h`。
+
+## 14. 管线固化 campix（apk 包）+ tar 属主事故复盘（r91，2026-10-22）
+
+### 14.1 campix 包（"开机即可用摄像头"的正式载体）
+
+- **结构**：noarch 包 `main/campix/`（pmaports），根路径规范：lib 在
+  `/usr/lib/camera/{setup.sh,mg68h.py}`、CLI `/usr/bin/camera`、
+  systemd 单元 `/usr/lib/systemd/system/campix.service`。abuild 硬规
+  已实证两次：包内容物禁入 /usr/local（首建被拦）；systemd 单元
+  禁入 /etc/systemd/system（管理员覆盖区，包位应 /usr/lib/systemd）。
+- **依赖**：python3 v4l-utils i2c-tools；`camera boot|status|restore` +
+  `camera front|rear [exp] [gain] [tp]`；`/etc/conf.d/campix` CAMPX_BOOT
+  选择 boot 武装链（现在默认 rear）。文档装
+  `/usr/share/doc/campix/README`。
+- **双 init**：OpenRC `/etc/init.d/campix`（`rc-update add campix default`
+  已加，重启实测 BOOT_TS≈17s 武装 RPIX 全链、MG_DONE）；phosh 未来
+  systemd 单元已就库。boot 分支不常电传感器（runtime PM auto）。
+- **boot 默认曝光（r91F 新增，用户拍板）**：武装时顺带 `--set-ctrl
+  exposure=3200/gain=248`（rear）或 1600/248（front）注册一次 ctrl——
+  评估在传感器 runtime-suspend 时被 s_ctrl 的 `pm_runtime_get_if_in_use`
+  推迟寄存器写入，由驱动在**每次 stream 唤醒时整册重放**（
+  `s_stream → __v4l2_ctrl_handler_setup`），因此无需额外电源窗口；
+  实测 boot-bare mean 51.7（手动工作点 37.8），暗房亦可拍。
+- **安装**：pmbootstrap build（fido/用户终端）→ `apk add`。sideload
+  同语义：`pmbootstrap sideload campix --arch aarch64`（--arch 只认
+  8 个目标架构，noarch 不是合法值；需要设备 sudo 交互密码）。签名信任：
+  pmbootstrap abuild 公钥 `pmos@local-6ac7253d.rsa.pub` 已装设备
+  `/etc/apk/keys/`（两步法），本地 apk 直装无需 --allow-untrusted。
+- **未收尾**：设备当前实跑 r0+手工补丁；(re-)安装 = 用户 build r1 后
+  sideload/apk add 即收敛。
+
+### 14.2 tar 属主事故复盘（This incident defined the rule）
+
+- **事故**：旧设备 `tar -cf … -C staging .` 把 staging 父目录也打进归档
+  （./etc ./usr ./home），root 解包按归档属主恢复 → 设备上无 uid1000，
+  /etc、/usr、/home/user 全被降权 → sshd StrictModes 拒 authorized_keys、
+  sudo/sshd 失效；修复失传，重刷机收场。
+- **规则**（AGENTS.md 铁律）：系统组件安装一律 apk；两步法写入
+  （cat→/home/user + sudo cp）永不触碰父目录；归档必须
+  `--owner=0 --group=0` 或逐文件 sudo cp。
+- **根因**：tar 恢复"整个成员集合的属主"，父目录被殃及；apk 记录包
+  层级，属主由包头（abuild fakeroot 全 root:root）强约束。
+- **pmaports 侧注意**：`main/campix/` 为新增目录（未提交，用户 git
+  决策）；abuild 曾以 Maintainer 邮箱格式错误拦截——正确身份是
+  git log 高频作者 `xys20071111 <xys20071111@hotmail.com>`。
+
+### 14.3 r91 探针链序（对本轮结论的紧凑注记）
+
+1. boot 裸拍后摄=真实数据（暗室 1× 增益下贴底 mean≈5）——**s_stream
+   自带 `pm_runtime_resume_and_get`，实测 suspended→active**。
+2. OV13850 gain 控件在（0x350a/b 1/16×计法，16..248），写≥512 被静默
+   钳制 → 896 无效果的谜底。
+3. `camera restore` 不重建链路，只还电源——capture 脚本必须匹配当前
+   武装链（R91C EPIPE 课）。
+4. r90B/D "遮挡"结论作废：r91C2/D/E/F 同镜头位真实场景确认。
+   相机无论如何未被遮挡。
+
+## 15. 同系列设备前后摄切换机制调查（2026-10-22）
+
+问题：同代（msm8916/msm8939 CAMSS，VFE-40/41 那一代）其他设备如何切换
+前后摄？结论：**生态里不存在"切换"实现——每个设备只做单摄静态独立链，
+双摄者把两个 sensor 各挂到自己的 CSID/CSIPHY 硬件链上，由用户态按需
+武装其中一条；没有任何同代生态案例把两个 sensor 走共享 ISP 或同时武装。**
+
+### 15.1 拓扑约束（内核 6.12 源码实证）
+
+`drivers/media/platform/qcom/camss/camss.c`，CAMSS_8x16（msm8916）资源：
+
+- CSIPHY×2（2ph-1-0）、CSID×2（4-1）、**ISPIF 单模块**、VFE×1
+  （`line_num=3` → **1×PIX + 3×RDI** 四个输入口）。
+- 驱动的 ispif 分配代码按 `CAMSS_8x16/8x96` 只 alloc 一个 ispif 实例；
+  ISPIF 子设备数=CSID 数（保线性 pipeline、避免分叉）。
+- 8939 生态补的 `qcom,msm8939-camss`（msm8916-mainline PR #400/#408
+  自带 dtsi）= csiphy0/1 + csid0/1/2 + 单 ispif + 单 vfe0 + vfe0_vbif。
+- 上游主线树里同代 dts（l8150/wt88047/l8910/gprimeltecan/fl8005a/
+  a7/l9100/kiwi…）**全部零 sensor 节点**——主线对这代无相机支持；
+  相机全部活在 msm8916-mainline/linux 社区内核上。
+
+单 VFE 单 PIX 的直接推论：全平台只有一条"完整 ISP"通路。
+"双摄同时跑"的官方原型（文档 gmsm8916-camss）
+= 一个 sensor 吃 PIX、另一个吃 RDI（互不抢口）。
+
+### 15.2 msm8916-mainline 生态相机 PR 全集（6 个）
+
+| PR | 设备 | 内容 | 状态 |
+|---|---|---|---|
+| #366 | longcheer-l8910 (BQ X5) | 后摄 imx214；`csiphy0→csid0→ispif0→vfe0_rdi0`；正文给 Megapixels ini 全解 | open |
+| #400 | longcheer-l9100 (msm8939) | 后摄 imx214 同接线；自带 msm8939 camss 节点+vbif+defconfig | open |
+| #408 | l9100 | **前摄 WIP**：新 s5k5e2 驱动 + camss 内核侧（csiphy/ispif/vfe-4-1/vbif）修补 + MCLK1 `regulator-fixed-clock` 强开 hack；dts sensor 节点未完 | open WIP |
+| #406 | l9100 | 后摄 VCM（dw9761 actuator） | closed(mergd) |
+| #144 | a3u | 后摄 | closed |
+| #140 | motorola-osprey | 后摄 | closed |
+
+要点：
+
+1. **一摄一 PR**：每个 PR 只声明一个 sensor 的静态独立链（自有
+   CSIPHY/CSID/CCI i2c/MCLK/电源域），没有"共享 PIX 切换"或同时武装
+   的任何拓扑。
+2. **数据路径的生态选择 = RDI，绕开 ISP**：#366 的 Megapixels 配置
+   `media-links=imx214:0->msm_csiphy0:0,msm_csiphy0:1->msm_csid0:0,
+   msm_csid0:1->msm_ispif0:0,msm_ispif0:1->msm_vfe0_rdi0:0` ——
+   13MP 直出 RGGB10P raw（4096×2304@30 可选）。
+3. **为什么全走 RDI**：上游 libcamera 无 qcom pipeline（pipeline 列表
+   只有 simple/rkisp1/ipu3/…），社区方案是 **simple pipeline +
+   SoftISP 软件去马赛克**（debayer_egl 等近期 commits）——RDI 输出
+   的线性 raw 恰是 simple pipeline 的形态；多元件分支式 PIX-ISP 图
+   没有用户态管家的支持。PR 正文口径"Snapshot 开箱可用"即此路径。
+4. l9100 是唯一"双摄并行推进"的设备（#400 后摄 + #408 前摄两独立
+   PR），也促证了同代双摄的自然硬件接法 = 前后各占一条 CSIPHY/CSID
+   硬链（方便共轨 MCLK），但用户态双摄配置至今没写。
+
+### 15.3 与 phoenix 方案对比
+
+| 维度 | msm8916-mainline 生态 | phoenix（本项目） |
+|---|---|---|
+| sensor 数 | 单摄为主（l9100 双 PR 铺开中） | 双摄（ov13850+ov5693 同 DTS） |
+| 数据路径 | **RDI raw 直通** + SoftISP 软件去 Bayer | **PIX 全硬件 ISP**（VFE4.1 demux/BLC/per-line calib/rolloff/color/几何） |
+| 切换 | 用户态 per-device ini / libcamera 相机枚举，无运行时重武装需求 | **mg68h RPIX/FPIX 运行时 link 重武装切换**（前后摄动态切换 + 独立全链重建） |
+| boot | 无管线自动化（用户态按需开图） | campix boot 武装 + 默认曝光 |
+
+- 硬件层面结论一致：双摄本来就各有一条独立通道（后 PHY0/CCI0/MCLK0，
+  前 PHY1/CCI i2c1/MCLK1）——"切换"。本质上只是"选哪条链开图"，没有
+  硬件 mux。同 stock HAL 的语义核实过（CAMERA.md §1/§3）。
+- phoenix 的 mg68h 做法在生态中是**超集**：我们下的带宽代价（双模式
+  teardown/rearm）换来了每次全链确定性重建，且我们是同代里唯一把
+  VFE4.1 硬件 ISP 全链跑起来并配套 per-line 校准的栈。
+- 可选后续：验证 RDI 路线（video 节点 vfe0_rdi*）作为双摄**同时**
+  流的备选（一 PIX 一 RDI）；生态无先例，仅作为并行验证项。
+
+### 15.4 调查方法备忘
+
+- 本地内核树 sensor 节点 grep（msm8916/8939 全 dts）→0 命中。
+- GitHub API：org repos 列表 + issues 搜索 `camera in:title`（6 命中）
+  + PR #366/#400/#408 diff（patch-diff.githubusercontent.com）+
+  issue 正文（Megapixels ini 全文来源）。
+- 上游 libcamera pipeline 目录核查（无 qcom）+ simple pipeline
+  commits（SoftISP 活跃开发，确认软 ISP 路线）。
+
+## 16. 当前状态总览（2026-10-22 收官快照）
+
+> 取代 §11（旧快照）。§12-§15 为 r89-r91 各轮细节与 §15 同世代调查，
+> 本节是唯一"当前"口径。
+
+### 16.1 一句话状态
+
+**双摄收官**：后摄 ov13850 / 前摄 ov5693 双双走 VFE4.1 PIX 全硬件 ISP
+（per-line 定标 #83 内核默认），`mg68h` RPIX/FPIX 运行时动态切换 +
+`campix` 开机自动武装（OpenRC 已启用）+ boot 默认曝光注册 = reboot 后
+不加任何参数即可裸拍出可用帧。生态层面是同世代唯一"双摄全 ISP + 动态
+切换"实现（生态全部为单摄 RDI raw，见 §15）。
+
+### 16.2 内核时间线（尾段；前轮全表见 §11.2 与 BUILD.md）
+
+| pkgrel | 设备 kernel | 内容 | 状态 |
+|---|---|---|---|
+| 79→80 | #81 | ov5693 运行时寄存器覆写 `stream_regs` | ✅（bisect 用后闲置） |
+| 80→81 | #82 | 前摄全 stock 24MHz（MCLK1/endpoint/固定 PPL） | ✅ r87/r88 前摄 RDI 实拍 |
+| 81→82 | **#83（设备当前）** | per-line Stage-B 定标 + 全量汇总 | ✅ r90A 前摄零 sysfs 直拍墙 \|U-V\|≈1.9/2.0/1.95、R90C 后摄 full-band 彩条、r91 boot 全链 |
+
+pmaports `APKBUILD pkgrel=82` == 设备 #83，**一致、无待装差**。
+下一个候选构建 = #84（可选，仅增益上限，见 16.6）。
+
+### 16.3 能力矩阵（实测锚点）
+
+| 能力 | 后摄 ov13850 | 前摄 ov5693 |
+|---|---|---|
+| 实拍真景 | ✅ R91C2/D/E/F | ✅ R91B（用户目检确认） |
+| boot 自动武装 | ✅ BOOT_TS≈17s RPIX | ✅ CAMPX_BOOT=front 同机制 |
+| boot 默认曝光 | ✅ exp3200/gain248 | ✅ exp1600/gain248 |
+| 硬件 ISP | ✅ B2（246/128/172 + cc=1） | ✅ B2 per-line（260/128/163 + cc=0） |
+| ctrl 范围 | exp ≤3324 / gain 16..248（15.5×） | exp1600/gain248 工作点 |
+| 测试图形 | ✅ full-band 彩条 | ✅ |
+| 数据锚点 | R91F boot-bare mean51.7/std32.5（比手动 R91D 37.8 亮）；1× 缺省贴底 mean≈5 | R91B mean50.0 |
+
+### 16.4 已定事实（r90/r91 实证定案）
+
+1. **s_stream 自动唤醒**：ov13850 `pm_runtime_resume_and_get`，
+   `suspended→active` 实测——"开机直接可拍"不需要传感器常电。
+2. **gain 上限**：`OV13850_GAIN_MAX 0xf8`(248, 1/16× 计法=15.5×)；
+   ≥512 静默钳制（R91D/E 896 无效果之谜）。
+3. **r90"后摄黑帧"根因**：1× 增益缺省在暗光照贴底，非遮挡、非链路
+   故障（probe1 与 R91A 同景 ×8 渲染一致）。
+4. **restore 语义**：`camera restore` 只降电源不重建链路；capture 必须
+   匹配当前武装链（R91C EPIPE 课）。
+5. **唤醒重放语义**：ctrl 写入在 suspend 期被 s_ctrl 的
+   `pm_runtime_get_if_in_use` 推迟，驱动每次 stream 唤醒整册重放
+   （mode regs → ctrl handler → STREAM）→ boot 注册默认 ctrl 无需
+   电源窗口，还比在途写入更亮（R91F 51.7 > R91D 37.8）。
+6. **切链语义**：VFE pix 单口必须先 teardown 冲突链接（EBUSY 保护），
+   mg68h 完成 RPIX/FPIX 双模式重建；物理上双摄本就各占自己的
+   PHY/CCI/MCLK 硬链。
+
+### 16.5 campix 收敛待办（唯一强制动作，用户终端）
+
+- pmaports `main/campix/` 就绪：`pkgrel=1` **从未构建**；APKBUILD sha
+  已对齐现行 setup.sh（含 boot 默认曝光）；`setup.sh` 在
+  pmaports == camera-ref（cmp 通过）。
+- 设备现状 = r0 安装 + 手工 cp 的 r1 内容 setup.sh（语义收敛、包文件
+  未收敛）。
+- 收敛：用户终端 `pmbootstrap build campix && pmbootstrap sideload
+  campix --arch aarch64`（fido/密码交互；`--arch` 合法值不含 noarch）；
+  或 build 完通知助手本地推送 `apk add`。装完 `/usr/local` 无残留
+  （包路径已全规范）。
+
+### 16.6 可选后续（悬置，均不阻断）
+
+1. **内核 #84**：`OV13850_GAIN_MAX` 0xf8→更大（≥16×）——仅增益上限
+   扩展；exp3324+gain248 在常见照度已可用，收益边际。
+2. **用户态 AEC**：曝光/增益在线闭环（当前纯手动工作点）。
+3. **RDI 并行储备验证**：PIC+RDI 双 sensor 同时流（§15 结论的备选
+   路线，生态无先例）。
+4. 向 msm8916-mainline 上游（类 #366/#400 patchset 的大工程 + 全社区
+   无 PIX 用例——暂停，不承诺）。
+
+### 16.7 git 收账（2026-10-22，签名提交已完成）
+
+按当时 `git status` 快照分题入库（全部 GPG 签名，身份
+`xys20071111 <xys20071111@hotmail.com>`）：
+
+- pmaports `device/testing/linux-postmarketos-qcom-msm8916`：
+  内核相机全域一部（M APKBUILD/driver patch/dts/ov13850.c +
+  9 个 camss/ov5693 补丁源）——即 #83 的完整可复现源集。
+- pmaports `main/campix`：新 noarch 包一部（`pkgrel=1` 未构建，
+  build+sideload 归用户终端）。
+- phoenix-pmos-port：`AGENTS.md` 铁律、`build-camera-v2..v7.sh`
+  下线清理、`camss/` 三补丁存档 + `camera-ref/tools/rear_pix_setup.sh`、
+  文档（BUILD.md/CAMERA.md 本轮全部更新）。
+- **未入库**（保持 ??，且属于专利件）：pmaports
+  `firmware-lenovo-phoenix/` 的 mba/modem/venus blobs——永远只存在
+  于工作树（BUILD.md 纪律），建议后续把 `*.mbn *.mdt *.b[0-9][0-9]`
+  写进 pmaports 级忽略以绝误加。
+
+### 16.8 本轮（r91）产物索引
+
+- 渲染/raw：`/tmp/opencode/r91/`（R91A/B/C2/D/E/F + probe1，各 ×1/×4/×8）。
+- 探针/工具：`camera-ref/tools/campix/{setup.sh,camera,mg68h.py,
+  r91_cap.sh,r91probe.sh}`；`r89_runbook.md` r91 段（6 轮 CAP_OK 表）。
+- 调查：CAMERA.md §15（同世代切换机制 + msm8916-mainline 6 PR 证据链）。
