@@ -68,13 +68,14 @@ adds `panel-novatek-nt35532`, restores `msm`.
 | repo file | pmaports change |
 |---|---|
 | `30-gpu-firmware.files` (pattern from archived `device-arrow-db820c`) | `source=` + sha; `package()` installs to `/usr/share/mkinitfs/files/` so a420 fw lands in initramfs |
-| `audio/msm8916-audio-init.sh` | installed `0755` to `/usr/libexec/`; needs `alsa-utils` in `depends=` |
+| `audio/msm8916-audio-init.sh` | installed `0755` to `/usr/libexec/`; needs `alsa-utils` in `depends=`. 2026-10-22: `CARD` fixed `phoenix`→`msm8916` (the QDSP6 sndcard's model — the old name died with the direct-LPASS card) |
 | `audio/90-msm8916-audio.rules` | installed to `/usr/lib/udev/rules.d/` (runs the script when the card appears) |
-| `ucm2/phoenix/phoenix.conf`, `HiFi.conf` | installed to `/usr/share/alsa/ucm2/phoenix/` (PipeWire profile) |
+| — (was `ucm2/phoenix/phoenix.conf`/`HiFi.conf`) | **removed 2026-10-22**: hand-rolled UCM matched the dead "phoenix" card name (PipeWire looks up `ucm2/<cardname>` = `ucm2/msm8916`). Replaced by `soc-qcom-msm8916-ucm` in `depends=` (msm8916-mainline/alsa-ucm-conf @3deea2860; its enable sequence = the same proven control set incl. `RDAC2 MUX RX2`) |
 
 `depends=` additions (local): `alsa-utils`,
 `firmware-lenovo-phoenix-venus`, `firmware-lenovo-phoenix-modem`,
-`soc-qcom-msm8916-rproc`, `q6voiced` (pulls `msm-modem`,
+`soc-qcom-msm8916-rproc`, `soc-qcom-msm8916-ucm` (2026-10-22 音频修复),
+`q6voiced` (pulls `msm-modem`,
 `msm-modem-uim-selection` → `rmtfs libqmi qmi-utils`; ModemManager comes
 in via `postmarketos-base-ui`).
 
@@ -187,3 +188,46 @@ busybox 无 devmem）。r61e/f 误用旧版 mediasetup 已重写并持久化。
 - boot 行为：武装 RPIX/FPIX 全链 + **boot 默认曝光注册**（rear
   exp3200/gain248、front 1600/248，驱动唤醒重放语义，无常电）；
   细节与硬事实见 `CAMERA.md` §14/§15/§16，生态调查 §15。
+
+## 11. 音频: 耳机双耳有声但不分左右 (2026-10-22)
+
+症状（QDSP6/modem 模式，2026-10-16 起回归）：耳机双耳都有声音，但左右声道
+播同一内容；LineageOS 下同机左/右正常。direct-LPASS 时代（2026-10-14 parked
+谜团）则是"单线交织 dual-mono"——两者根因不同，见下。
+
+根因（证据链）：
+- **Q6 卡名失配**：切 modem/QDSP6 后 snd card model= `msm8916`
+  （`msm8916-modem-qdsp6.dtsi` `qcom,model="msm8916"`），仓库手写的
+  udev 脚本 `CARD="phoenix"` 全部 `|| true` 静默失败，`ucm2/phoenix`
+  也匹配不上（PipeWire 按 `ucm2/<cardname>` 查找）→ 混音器控制一整层
+  失效。
+- **`RDAC2 MUX` 停在复位默认 'RX1'**：HPHL DAC 硬连 PDM_RX1（左），
+  HPHR DAC 本应由 `RDAC2 MUX=RX2` 吃 PDM_RX2（右）；失配下右耳 DAC 吃的
+  是左路 PDM_RX1 → 双耳同音。上游通用 UCM（soc-qcom-msm8916-ucm
+  @3deea2860）的 Headphones 序列正是含 `RDAC2 MUX RX2` 的同一套控件，
+  前提是该包真的被装上且卡名能匹配。
+- 10-14 parked 之谜（顺带解密）：direct 时代 I2SCTL=0x4400 =
+  spkmode SD0 + spkmono STEREO——上游 `lpass-cpu` 无 dai 子节点时默认
+  MODE_8CH→2ch 降级为 SD0 单线交织，CDC 侧 tap 按线分路（RX1←SD0、
+  RX2←SD1），单线下无法分 slot → dual-mono，非 codec 硬件问题；
+  Q6 模式 DTSI `qcom,sd-lines=<0 1>` 双线分路正确。
+
+| repo 文件 | pmaports 变更（device pkgrel 7→**8**） |
+|---|---|
+| `audio/msm8916-audio-init.sh` | `CARD="phoenix"`→`"msm8916"`（附注释）；sha512 重算 |
+| `ucm2/phoenix/`（已 `git rm`，git 历史留档） | APKBUILD source/package 删除 `phoenix.conf`/`HiFi.conf`；`depends=` 显式加 **`soc-qcom-msm8916-ucm`**（27-r0，edge 已发版） |
+
+验证产物：`~/.local/var/pmbootstrap/packages/edge/aarch64/device-qcom-msm8916-8-r8.apk`
+（含新脚本+规则、无 ucm2/phoenix）。构建注意：普通 `pmbootstrap build`
+卡在 zap 阶段 `sudo losetup --json`（FIDO 触碰提示污染 stdout），
+用 `--lax` 跳过 zap 绕过。
+
+部署与上机验证（待用户执行）：
+- `pmbootstrap install --password postmarketos`（或单独
+  `pmbootstrap sideload device-qcom-msm8916` 后重启）。
+- 快速判据（装包前也可先单点复现）：
+  `amixer -c msm8916 cset name='RDAC2 MUX' RX2 && speaker-test -c2 -twav`
+  ——翻到 RX2 后双耳立刻分左右即确认根因。
+- 若翻转后仍不分左右（兜底 fork 路径）：播放中单点读
+  `0x07709000`（Pri MI2S I2SCTL），期待 spkmode=QUAD01(5)+双线而非 SD0。
+

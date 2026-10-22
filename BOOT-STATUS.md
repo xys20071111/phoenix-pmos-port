@@ -165,6 +165,11 @@
   fork 与 torvalds 6.12 的 audio 驱动 diff 只有 MBHC-gpio, 数据通路无差别.
 - 教训: regmap 禁止暴力全读 (挂总线触发看门狗重启); 单点读 lpass 无害.
 - 现状: 输出按 dual-mono 用 (喇叭本来就是 mono). 真立体声待驱动深挖.
+- **2026-10-22 解密**（真立体声在 Q6 模式下已解决, 见文末
+  "耳机声道解决" 一节）: 本节真相 = direct 时代上游 `lpass-cpu` 对无
+  dai 子节点的 DT 默认 MODE_8CH→2ch 降级成 SD0 单线交织
+  (I2SCTL=0x4400 spkmode=SD0), CDC 侧 tap 按线分路 (RX1←SD0、RX2←SD1),
+  单线交织无法分 slot → dual-mono; 非 codec/硬件问题.
 
 ## 重力旋转修复 (2026-10-14, 已解决)
 - 横屏上下颠倒: 缺 mount-matrix, Y/Z 全反 (X 是对的).
@@ -351,3 +356,29 @@
   phoenix-usbgadget r3 (gadget.start v4 + unudhcpd.conf).
 - 前向兼容: phosh+systemd (usb-moded) 时代内核层全部沿用, 脚本让位 usb-moded
   (网段约定一致); 详见 `otg/OTG.md` 前向兼容节.
+
+## 耳机声道解决: Q6 卡名失配 + RDAC2 MUX (2026-10-22, 修复包已构建待上机)
+
+症状（10-16 起, QDSP6/modem 模式）：耳机双耳都有声但左右不分, 双耳同音;
+LineageOS 同机立体声正常。定界与修复细节见 `BUILD.md` §11, 概要:
+
+- 根因 = 用户空间失配, 非内核/硬件: modem 上线后 snd card 名从
+  "phoenix" (direct-LPASS) 变为 "msm8916" (msm8916-modem-qdsp6.dtsi).
+  仓库手写 udev 脚本 `CARD="phoenix"` 全部静默失败 (`|| true`),
+  手写 `ucm2/phoenix` 匹配不上 (PipeWire 按 `ucm2/<cardname>` 找
+  `ucm2/msm8916`) → 混音器控制一整层未生效.
+- 直接机理: `RDAC2 MUX` 停在复位默认 'RX1' — HPHL DAC 硬连 PDM_RX1 (左),
+  HPHR DAC 本应经 RDAC2 MUX=RX2 吃 PDM_RX2 (右), 失配下右耳也吃左路
+  PDM_RX1 → 双耳同音. 数字 codec 路径 (RX1/RX2 MIX1, 4ch AFE) 本身正常,
+  Q6 后端固化 48k/2ch/S16 (`msm8916_qdsp6_be_hw_params_fixup`),
+  DTSI `qcom,sd-lines=<0 1>` 双线分路正确.
+- 修复 (device pkgrel 7→**8**, 未 commit): udev 脚本 `CARD=msm8916`;
+  删手写 `ucm2/phoenix`, `depends=` 加通用 **`soc-qcom-msm8916-ucm`**
+  (27-r0, msm8916-mainline/alsa-ucm-conf @3deea2860, EnableSequence 含
+  `RDAC2 MUX RX2` 的同一套已验证控件).
+- 验证产物: `~/.local/var/pmbootstrap/packages/edge/aarch64/
+  device-qcom-msm8916-8-r8.apk` (新脚本/规则在内, 无 ucm2/phoenix).
+- 上机验证: `amixer -c msm8916 cset name='RDAC2 MUX' RX2` +
+  `speaker-test -c2 -twav` 装包前即可单点复现; 若翻转后仍不分左右,
+  兜底查 LPAIF Pri MI2S I2SCTL (播放中单点读 `0x07709000`, 期待
+  spkmode=QUAD01=5). 10-14 parked 谜团在同一时刻顺带解密 (见上节注记).

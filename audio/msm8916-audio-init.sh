@@ -3,7 +3,9 @@
 # (LPASS DMA is hardwired, no route mixer; see BOOT-STATUS.md "音频输出打通").
 # Runs from udev when the sound card appears, so settings survive reflash.
 # Idempotent and quiet: every line must tolerate re-runs, hence || true.
-CARD="phoenix"
+# Card name: direct-LPASS card was "phoenix"; since the QDSP6/modem switch
+# (2026-10-16) the msm8916-modem-qdsp6.dtsi card is model "msm8916".
+CARD="msm8916"
 [ -e "/dev/snd/controlC0" ] || exit 0
 
 # --- playback: digital RX gains at 0dB (68%), let userspace do volume ---
