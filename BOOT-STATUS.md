@@ -266,7 +266,7 @@
     无合并版 vcodec_clks, 故用 vcodec0 打全).
   * IOVA 预留保留 (独立问题, 与上游无关的本地修复).
 
-## Venus v9 最终形态修正 (2026-10-15, 待验证)
+## Venus v9 最终形态修正 (2026-10-15 提出, 2026-10-25 上机通过收编)
 - 逐行对过 lore 原始序列 (v7 lkml 11699 / v8 2/9 lkml 06219 / v9 cover
   LWN 1074496 / v10 ratatoskr 17350949) 后, 发现"master 无 gcc flags"是
   合并时序造成的错觉: v10 说明 media 部分已 apply, 但 DT/clk 两片还 pending,
@@ -285,6 +285,14 @@
   没碰 mem_protect_video_var 也过. cp 支线仅当上面两修后仍楔死才开.
 - 逆袭验证点: genpd core0/1 ON + 两颗 core 时钟 rate >= 133MHz +
   IRQ 计数持续增长 + 无 "output_manager pool is NULL".
+- 2026-10-25 收编判定 (内核包 r83 接线后, 用户上机): 1080p@30 与
+  1080p@60 硬解通过、无回归; 但 clk_summary 各 venus 行播放中无任何
+  频率变化. 事后核对 gcc-msm8939.c 属拓扑预期: 8939 venus 只有一颗
+  RCG (vcodec0_clk_src, 133/200/266MHz 频表), "core"/CORE0/CORE1
+  三颗分支钟共享它且全部 CLK_SET_RATE_PARENT, 两种 shape 的 set_rate
+  落点是同一颗 RCG → 频控等价, "两颗核心钟不同频"物理上不存在
+  (本条"修正 2"里 CORE1 跑 XO 的推论在 8939 不成立). 判定: 通过,
+  v9 收编 (细节 repo BUILD.md §13).
 
 ## Venus 硬解打通 (2026-10-16)
 - ffmpeg h264_v4l2m2m: 1080p25 5 秒片 125 帧, 48fps, IRQ 34->392.
@@ -382,3 +390,18 @@ LineageOS 同机立体声正常。定界与修复细节见 `BUILD.md` §11, 概�
   `speaker-test -c2 -twav` 装包前即可单点复现; 若翻转后仍不分左右,
   兜底查 LPAIF Pri MI2S I2SCTL (播放中单点读 `0x07709000`, 期待
   spkmode=QUAD01=5). 10-14 parked 谜团在同一时刻顺带解密 (见上节注记).
+
+## Modem 服务开机启动进包 (2026-10-24, device pkgrel 9)
+
+- MODEM.md 时代的三项手动步骤 (`rc-update add` modemmanager/rmtfs/
+  msm-modem-uim-selection) 全部固化进 device 包 `package()`: 直接产出
+  `/etc/runlevels/default/` 三个符号链接 (phoenix-usbgadget `local`
+  同款模式, 纯包数据无 post-install 时序; 存量手动启用的 rootfs 升级幂等).
+- 顺带修正依赖口径: ModemManager 明确进 device `depends=` —— 核验发现
+  base-ui/fbkeyboard 从不拉也不启用它, fresh rootfs 包库无 modemmanager
+  本体, 旧"由 postmarketos-base-ui 带入"不成立.
+- runlevel 全取 `default` (上游 soc-qcom-modem 口径 + 10-16 dmesg 时间线
+  mpss t≈60s = rmtfs -s 在 default 起 mss). q6voiced 仍交上游
+  `soc-qcom-msm8916-rproc-openrc`; 但 2026-10-18 里观察其 post-install
+  未产生启动链接 (原因未明), 新刷首启应 `rc-update show` 核对, 缺则补.
+- 细节与对存量系统的补齐命令: `MODEM.md` "OpenRC 开机启动项" / `BUILD.md` §2.

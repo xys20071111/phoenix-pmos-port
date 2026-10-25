@@ -1,9 +1,24 @@
 # Building with this repo (phoenix port)
 
-All port changes live as **local modifications** in the pmbootstrap
-`pmaports` checkout (`~/.local/var/pmbootstrap/cache_git/pmaports`).
-Nothing here is upstream yet. This file maps every repo file to the
-package change it requires, so a fresh checkout can be reconstructed.
+Since 2026-10-24 the port changes live in two **dedicated local packages**
+instead of local modifications of the shared/`generic` qcom-msm8916 packages:
+
+- Kernel: `device/testing/linux-lenovo-phoenix` (fork of
+  `linux-postmarketos-qcom-msm8916`, pkgrel numbering continues at 82).
+- Device: `device/testing/device-lenovo-phoenix` (fork of the local additions
+  that used to sit in `device-qcom-msm8916`, numbering carried over 8-r9).
+- Both generic packages were restored to the pristine upstream snapshot
+  (fdf5ba4 / origin/main of the local pmaports clone) — they build again for
+  any other msm8916 device without our patches.
+- Complete package mirrors live in this repo under `aports/` (see
+  `aports/README.md` for the repo↔pmaports correspondence; the two known
+  radioactive-sync spots — the DTS drift fix and the venus patch shape —
+  are both resolved as of 2026-10-25: DTS synced during the split; venus
+  v9 wired into pmaports (pkgrel 83) and on-device verified (decode pass;
+  clock-rate observability is moot on 8939 — single shared RCG, §13).
+- Unchanged local pkgs: `firmware-lenovo-phoenix` (-venus/-modem),
+  `phoenix-usbgadget`, `main/lk2nd` dtb patch, `main/campix`.
+
 Rule of thumb: **repo holds the source files, pmaports holds the wiring**
 (APKBUILD edits). Proprietary blobs never enter either git repo —
 except the pmaports *working tree*, which is local-only by nature.
@@ -15,7 +30,7 @@ pmbootstrap checksum <pkg>   # never hand-write sha512sums
 pmbootstrap apkbuild_parse <pkg>   # must print no errors
 pmbootstrap build <pkg>
 pmbootstrap install --password postmarketos
-./split-image.sh <qcom-msm8916.img> ./images
+./split-image.sh <combined.img> ./images
 fastboot flash boot lk2nd.img        # one time (or after lk2nd rebuild)
 fastboot flash -S 200M system ./images/boot-part.img
 fastboot flash -S 200M userdata ./images/root-part.img
@@ -30,14 +45,26 @@ UUID that does not exist and the device dead-ends before USB. To update
 **only the kernel** (rootfs untouched), skip fastboot entirely:
 
 ```
-pmbootstrap sideload linux-postmarketos-qcom-msm8916   # pushes the apk over SSH and apk-adds it into the running system
+pmbootstrap sideload linux-lenovo-phoenix   # pushes the apk over SSH and apk-adds it into the running system
 ```
-(reboot after; used successfully for r66 → build #67).
+(reboot after; used successfully for r66 → build #67 under the old
+`linux-postmarketos-qcom-msm8916` name).
+
+⚠️ **Post-split snapshot**: the currently-flashed rootfs pair still carries
+the OLD packages (`device-qcom-msm8916` + `linux-postmarketos-qcom-msm8916`
+@ kernel #83). See §12 for the one-time transition.
 
 Bump `pkgrel` on every change, otherwise `install` reuses the cached
 package silently.
 
-## 1. Kernel: `device/testing/linux-postmarketos-qcom-msm8916`
+## 1. Kernel: `device/testing/linux-lenovo-phoenix` (own fork, 2026-10-24)
+
+Fork of `linux-postmarketos-qcom-msm8916`; same source tarball (cached
+distfile), config renamed `config-lenovo-phoenix.aarch64` (byte-identical
+except five local `CONFIG_` deltas: `CHARGER_SMB347`, `VIDEO_OV5693`,
+`VIDEO_OV13850`, `DRM_PANEL_NOVATEK_NT35532`, `QMMIO not set`), aarch64-only.
+The upstream generic package was restored to pristine (upstream pkgrel=0);
+none of these rows apply to it anymore.
 
 | repo file | pmaports change |
 |---|---|
@@ -60,10 +87,14 @@ package silently.
 | `camera/ov13850.c` + `camera/ov13850.kconfig` | `source=` + sha; `prepare()` copies into `drivers/media/i2c/` + appends Makefile/Kconfig (r61 rework): phoenix rear camera driver, mainline-style skeleton; ALL register tables now verbatim from the stock sensor lib decode (libmmcamera_ov13850.so: 50 ms 0x0103 singleton + 217-entry init + 6 per-mode tables), 4-lane CSI2 with per-mode link freqs 300/320/600 MHz (exposes V4L2 LINK_FREQ/PIXEL_RATE per mode); probe detect() keeps the 2.5 s retry window (rear DT reg 0x36 = stock slave info decode) |
 | a5xx `MODULE_FIRMWARE` | inline `printf` append in `prepare()` (no repo file; keeps a420 fw refs in `msm.ko`) |
 
-## 2. Device: `device/testing/device-qcom-msm8916`
+## 2. Device: `device/testing/device-lenovo-phoenix` (own package, 2026-10-24)
 
-Shared generic package; our additions are marked local. `modules-initfs`
-adds `panel-novatek-nt35532`, restores `msm`.
+Own package holding exactly the former local additions of the generic
+package (which is again pristine upstream). `modules-initfs`
+adds `panel-novatek-nt35532`, restores `msm`; deviceinfo codename
+`lenovo-phoenix`, dtb narrowed to `qcom/msm8939-lenovo-phoenix`, screen
+1080×1920; `depends=` dropped `firmware-qcom-adreno-a300` (this board only
+uses a420) — everything else carried over verbatim (8-r9 numbering).
 
 | repo file | pmaports change |
 |---|---|
@@ -76,8 +107,20 @@ adds `panel-novatek-nt35532`, restores `msm`.
 `firmware-lenovo-phoenix-venus`, `firmware-lenovo-phoenix-modem`,
 `soc-qcom-msm8916-rproc`, `soc-qcom-msm8916-ucm` (2026-10-22 音频修复),
 `q6voiced` (pulls `msm-modem`,
-`msm-modem-uim-selection` → `rmtfs libqmi qmi-utils`; ModemManager comes
-in via `postmarketos-base-ui`).
+`msm-modem-uim-selection` → `rmtfs libqmi qmi-utils`), `modemmanager`
+(2026-10-24, pkgrel=9 —— base-ui/fbkeyboard 不拉 ModemManager 本体,
+"由 postmarketos-base-ui 依赖带入"旧口径撤回).
+
+**OpenRC 开机启动接线 (2026-10-24, device pkgrel 8→9)**: `package()` 直接
+`ln -s /etc/init.d/{modemmanager,rmtfs,msm-modem-uim-selection}` 到
+`/etc/runlevels/default/` —— phoenix-usbgadget 的 `local` 链接同款模式
+(纯包数据, 无 post-install 脚本时序问题; 存量已手动启用的 rootfs 升级时
+幂等 no-op)。不再需要 MODEM.md 之前记录的"每刷必手动 rc-update"。全放
+default runlevel（上游 soc-qcom-modem-openrc 口径：uim-selection initd 的
+`need rmtfs`/`before modemmanager` 是同 runlevel 语义；设备 2026-10-16
+dmesg 时间线 mpss t≈60s = `rmtfs -s` 在 default 拉起 mss 的行为）。
+q6voiced 不在此接线，仍归上游 `soc-qcom-msm8916-rproc-openrc` 的
+post-install。背景与一次性补齐命令：`MODEM.md` "OpenRC 开机启动项"。
 
 ## 3. Firmware: `device/testing/firmware-lenovo-phoenix` (new, local-only)
 
@@ -166,7 +209,8 @@ busybox 无 devmem）。r61e/f 误用旧版 mediasetup 已重写并持久化。
 - 开发态：`camera-ref/tools/campix/`（`setup.sh`、`mg68h.py`、`camera` CLI、
   `r91_cap.sh`、`r91probe.sh`、`APKBUILD`、init 单元、confd、README）。
 - 构建态：`~/.local/var/pmbootstrap/cache_git/pmaports/main/campix/`
-  （本体目录，全部 root 规范路径，未提交——待用户 git 决策）。
+  （本体目录，全部 root 规范路径；已提交 pmaports `712a8b5`，
+  2026-10-25 血统重排后，原 `cac9434`）。
 
 | repo 文件路径 | 安装路径 |
 |---|---|
@@ -230,4 +274,162 @@ busybox 无 devmem）。r61e/f 误用旧版 mediasetup 已重写并持久化。
   ——翻到 RX2 后双耳立刻分左右即确认根因。
 - 若翻转后仍不分左右（兜底 fork 路径）：播放中单点读
   `0x07709000`（Pri MI2S I2SCTL），期待 spkmode=QUAD01(5)+双线而非 SD0。
+
+## 12. 设备拆分: device-lenovo-phoenix + linux-lenovo-phoenix (2026-10-24)
+
+背景：此前所有 phoenix 改动都以"本地未提交改动"方式寄居在两个上游
+通用包 `device-qcom-msm8916` / `linux-postmarketos-qcom-msm8916` 里，
+上游任何重建/覆盖都会把端口改动抹掉，也不符合"通用包必须保持 pristine"
+的常理。本节为拆分定局记录。
+
+### pmaports 工作区变更（~/.local/var/pmbootstrap/cache_git/pmaports）
+
+| 动作 | 内容 |
+|---|---|
+| **新增** `device/testing/linux-lenovo-phoenix/` | 31 文件（APKBUILD + `config-lenovo-phoenix.aarch64` + 22 补丁 + 源文件）。_flavor=`lenovo-phoenix`，arch=aarch64（去掉 armv7 + 其 config），去掉 `replaces=`，tarball distfile 复用上游名（cache_distfiles 已有 ~230MB 同字节文件，sha 一致，不重下载），其余（prepare/build/package）与通用包本地末态逐行相同；pkgrel=82 连续 |
+| **新增** `device/testing/device-lenovo-phoenix/` | 7 文件（APKBUILD、deviceinfo、kernel-cmdline.conf、modules-initfs、30-gpu-firmware.files、msm8916-audio-init.sh、90-msm8916-audio.rules）。deviceinfo codename=`lenovo-phoenix`、dtb=qcom/msm8939-lenovo-phoenix、screen 1080×1920；depends 去掉 `firmware-qcom-adreno-a300`（本板只有 a420）；kernel 子包 extlinux (+ efi 同型保留) depends=`linux-lenovo-phoenix`；pkgver/pkgrel=8/r9 延续 |
+| **恢复上游** | `device-qcom-msm8916`、`linux-postmarketos-qcom-msm8916` 两个目录整体 `git restore --source=fdf5ba4`（本地克隆的 origin/main，即本地 7 个 phoenix 提交之前的快照）→ 通用包回到上游 4 文件原状（device pkgrel=0 无本地叠加），任何上游行为不再被端口"wiring"污染 |
+| **注释更新** | `device/testing/firmware-lenovo-phoenix/APKBUILD` 头注释 device-qcom-msm8916 → device-lenovo-phoenix |
+| **配置切换** | `pmbootstrap config device lenovo-phoenix`（kernel=extlinux、UI fbkeyboard 不变；workdir.chroot 会按新设备重建 rootfs chroot） |
+| **验证** | `pmbootstrap build device-lenovo-phoenix` 通过（edge/device-lenovo-phoenix 8-r9 产出，含 runlevel 符号链接/mkinitfs files/deviceinfo 后缀剥离全部正确）；`linux-lenovo-phoenix` 由用户完整构建并上机（见下"上机验证"；r83 venus v9 接线后再构建/sideload 亦通过）；APKBUILD sha512 与文件逐一核对通过，`pmbootstrap apkbuild_parse` 无错 |
+
+### repo 变更（本仓库）
+
+| 动作 | 内容 |
+|---|---|
+| **新增** `aports/` | 两个包的完整功能镜像（`aports/device-lenovo-phoenix/` 7 文件、`aports/linux-lenovo-phoenix/` 31 文件）+ `aports/README.md`（拆分对照表、事实来源、偏差清单、迁移注意） |
+| **同步** `msm8939-lenovo-phoenix.dts` | 仓库旧版（r84，19.2 MHz MCLK）→ r86 部署版（24 MHz、link-freq 400 MHz，构建 #82 上机验证）；此前仓库↔pmaports 漂移 |
+| **改** `firmware-lenovo-phoenix/APKBUILD` | 头注释同 pmaports 侧 |
+| **改** `README.md`/`BUILD.md` | 包名更新 + 拆分记录（本节） |
+| **接线** `power/venus-msm8939-res.patch`、`power/venus-v1-vcodec-clks.patch` | 2026-10-25 把仓库 69b09c7「v9 final shape」换入 pmaports `linux-lenovo-phoenix`（pkgrel 82→83 + 接线注释，checksum 重算，aports 镜像同步）；语义差与上机结果见 §13，**同日上机通过** |
+
+### 上机验证（2026-10-24/25，用户报告）
+
+拆分后的新包（`device-lenovo-phoenix` + `linux-lenovo-phoenix`）刷机后
+**系统正常启动，功能看起来正常** —— 拆分本身收工；此后的 venus v9
+接线见 §13（接线时刻起部署内容不再与 #82 逐字节等同）。
+
+### 存量 rootfs 一次性迁移（二选一）
+
+- **推荐：整刷**。`pmbootstrap install` 全新产出（device= lenovo-phoenix）
+  → `./split-image.sh` → 成对 flash boot/root（image 纪律不变）。
+- **增量 sideload**（当前运行系统，内核 #83 不变）：设备上
+  `apk del device-qcom-msm8916 linux-postmarketos-qcom-msm8916 &&
+   apk add device-lenovo-phoenix`（包装时 kernel-extlinux 会拉入
+  linux-lenovo-phoenix；**内核包互斥**——LOCALVERSION 仍为 `-msm8916`，
+  /lib/modules 同名目录冲突，不能共存）；然后主机侧重出 boot 镜像对刷。
+
+### pmaports git 状态（2026-10-25 血统固化：e6ff10d + 5 条签名提交）
+
+上游新基 `e6ff10d`（相对拆分前所用旧基 `fdf5ba4` 仅增 `cf40ea2`——
+通用 msm8916 包 kconfig 更新）之上重放并已全部 GPG 签名：
+
+```
+ac2ac3b  lk2nd: dtb-files (fdtdir auto-discovery of the phoenix DTB)
+e760188  firmware-lenovo-phoenix packaging (APKBUILD + provenance README)
+6c735e0  phoenix-usbgadget: new local package (RNDIS auto-bind + USB subnet)
+712a8b5  campix: new noarch userland package (boot-time camera pipeline arming)
+c7ed987  split into dedicated device/kernel packages + venus v9 (pkgrel 83)
+```
+
+- 旧血统寄居通用包的三条提交（9ee4fd3 / af110f2 / 244fc92）按方案 A
+  跳过：内容已全部由拆分提交自足；两个通用包目录保持上游 `cf40ea2`
+  原样（重放时 kernel config 三方合并结果与上游逐字节一致，已复核）。
+- 事故记录（2026-10-25 上午）：上游重放与提交动作并发撞车，30 个固件
+  blob 曾进入废提交 `b5c672a`——已弃；对象经 reflog 仍可达约 90 天，
+  **勿**跑 `git gc --prune`。
+- 纪律：`git commit` 前必查 `git status --porcelain`，固件 blob 永不
+  入库；blobs 保持未跟踪（`device/testing/firmware-lenovo-phoenix/`
+  下 mba/modem/venus 共 30 个 `.mbn`/`.b0x`），仅作本地 distfile。
+- `main` 领先 `origin/main` 5 条提交且未 push；是否推送由用户决策。
+
+## 13. Venus v9 接线：final shape 换入 linux-lenovo-phoenix（2026-10-25，上机通过）
+
+背景：r60..r82 部署的 venus 两个补丁是仓库 `630e3a7`（"full upstream-shape
+power logic (clean retest)"）的字节级拷贝；次日仓库 `69b09c7`（"venus v9
+final shape (TRIGGER, split vcodec clocks)"）重排了 vcodec 时钟数组，但该
+重排从未进 pmaports、从未上机。2026-10-24 深度核查（两侧分别对 pristine
+6.12.1 打补丁、diff 生成码并用 `patch --dry-run`/实际 patch 验证）确认
+差异真实且为行为级，用户决策接线并自行构建上机。
+
+### 语义差（核查结论）
+
+| 项 | 部署旧 shape（= 630e3a7） | 仓库 v9（= 69b09c7） |
+|---|---|---|
+| `msm8939_res` vcodec 时钟数组 | 两数组同填 `{ "vcodec0_core", "vcodec1_core" }`，`vcodec_clks_num=2` | `vcodec0_clks={ "vcodec0_core" }`、`vcodec1_clks={ "vcodec1_core" }`，`num=1` |
+| `core_power_v1` 上/下电 | 单次 `vcodec_clks_enable(vcodec0_clks)`（循环 2 项把两颗钟都开） | 两数组各一次（净 enable/disable 集合不变，仅 fail unwind 标签更细） |
+| **`core_clks_set_rate()`（唯一行为差）** | `vcodec1_clks[0]` 绑定同一个 "vcodec0_core" 句柄 → `GCC_VENUS0_CORE1_VCODEC0_CLK` 只被 enable、**从未 set_rate**（停 boot 默认频率） | `vcodec1_clks[0]="vcodec1_core"` → 第二子核时钟也随 freq_tbl 变频（133.33 MHz @1080p30/720p，266.67 MHz @1080p60） |
+
+不变性事实：`VIDC_VCODEC_CLKS_NUM_MAX=2` 两种 shape 都结构合法；
+`gcc-msm8939-venus-trigger.patch` 两侧字节一致（69b09c7 的 TRIGGER 部分
+已在部署）；69b09c7 对 DTS 只改注释（已随拆分进包）；v9 补丁头部的 `#`
+注释 GNU patch 干净跳过（实测 rc=0）；旧 deploy 侧 venus H264 硬解
+一直工作 → 测试期望是"不回退 + CORE1 频率开始跟随"。
+
+后记（上机后核实 `gcc-msm8939.c`，即 r83 上机同一份源码）：上表
+"唯一行为差"在 8939 硬件上**实际为无差**——venus 路径只有一颗可变频
+RCG `vcodec0_clk_src`，三颗分支钟（"core"/CORE0/CORE1）全部共享它
+且都带 `CLK_SET_RATE_PARENT`，无论 set_rate 打在哪颗 branch 上，落点
+都是同一颗 RCG；详见下文"上机结果"。
+
+### 接线动作（本机完成，不构建）
+
+- pmaports：两个 v9 补丁换入 `device/testing/linux-lenovo-phoenix/`；
+  APKBUILD `pkgrel 82→83` + r83 接线注释；`pmbootstrap checksum` 重算
+  （tarball 复用 cache，无下载）+ `apkbuild_parse` 无错。
+- 仓库：`aports/linux-lenovo-phoenix/` 同步 APKBUILD + 两补丁，
+  `diff -rq` 全部 31 文件与 pmaports 一致。
+
+### 上机步骤（构建由用户执行）
+
+```
+pmbootstrap build linux-lenovo-phoenix
+pmbootstrap sideload linux-lenovo-phoenix
+# 设备重启
+```
+
+venus 是模块（`CONFIG_VIDEO_QCOM_VENUS=m`），模块级变更 sideload+重启
+即可；vmlinuz 内容不变，无需重刷 boot 分区。
+
+### 设备验证点
+
+1. probe 与时序回归：`dmesg | grep -i venus` —— 正常 probe、无
+   `-EBUSY`/stuck clock（v9 上电顺序与旧 shape 相同：domains → core
+   clks → vcodec0 → vcodec1 → HW 模式交接）。
+2. 第二核时钟变频（本次差异之核心）：`grep -iE vcodec
+   /sys/kernel/debug/clk/clk_summary`，看 `GCC_VENUS0_CORE0_VCODEC0_CLK`
+   / `GCC_VENUS0_CORE1_VCODEC0_CLK` 两行 rate——旧 shape 下 CORE1 播放/
+   停播恒为 boot 值；v9 预期播放 1080p@30 或 720p 时两颗都到
+   133.33 MHz、1080p@60 时 266.67 MHz、停播回落。
+3. 功能回归：1080p/720p H264 硬解照常、无 "output_manager pool is
+   NULL"、IRQ 计数随播放持续增长。
+
+### 上机结果（2026-10-25，用户报告）
+
+- **功能：通过**。1080p@30 与 1080p@60 硬解均正常、无回归，用户判定
+  通过（"不影响使用，算通过吧"）。
+- **验证点 2（时钟变频）：未观察到任何 venus 相关行 rate 变化**
+  （播放中亦无，含各 vcodec 分支行）。
+- 定论（事后核实 `gcc-msm8939.c`，与 r83 上机同一份源码）：8939 GCC
+  的 venus 路径**只有一颗可变频钟** `vcodec0_clk_src`（RCG @0x4C000，
+  freq 表 133.33/200/266.67 MHz）；"core"（GCC_VENUS0_VCODEC0_CLK）与
+  `gcc_venus0_core{0,1}_vcodec0_clk` 三颗 `clk_branch2` 分支钟全部
+  共享它且都带 `CLK_SET_RATE_PARENT`——无论 set_rate 打在
+  "vcodec0_core" 还是 "vcodec1_core"，最终都落在同一颗 RCG 上。旧
+  shape（同一 branch 打两遍）与 v9（另一 branch 打一遍）在 8939 上
+  **频控行为等价**，且物理上不存在"两颗 vcodec 核心钟不同频"的可能。
+  ∴ v9 相对旧 shape 在这块硬件上没有频控差，"CORE1 从未 set_rate
+  （跑 XO）"的动机推论在 8939 拓扑上不成立（分支钟显示的就是共享
+  父钟的频率）；"看不到频率变化"与等价性自洽。
+- v9 仍收编：语义等价但更贴上游 msm8939 形态、fail unwind 更细，且
+  本次上机实证无回归。若日后想要频变证据：播放 1080p@60 时盯
+  `vcodec0_clk_src` 行 rate 是否切到 266.67 MHz（可选，不影响结论）。
+
+### 收敛（已按"通过"落定）
+
+- v9 收编：repo 与 pmaports 双侧归一为 v9 形态（pkgrel 83 即上机版），
+  `aports/README.md` 偏差表销账；设备侧结论由用户自行记入
+  `BOOT-STATUS.md`。
+- 若日后再回退：pmaports 两补丁恢复 `630e3a7` 版 + `pmbootstrap
+  checksum` + pkgrel 再 bump，aports 镜像重新同步。
 

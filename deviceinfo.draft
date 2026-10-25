@@ -1,9 +1,9 @@
 # Reference: <https://postmarketos.org/deviceinfo>
-# SUPERSEDED 2026-10: stock device-qcom-msm8916 is sufficient, no custom
-# device package needed (all phoenix specifics live in kernel DTS/driver).
-# Kept for history.
+# HISTORICAL DRAFT (2026-10 早期): "先通用后拆分"的原始设想，2026-10-24 已落地，
+# 独立设备包见 aports/device-lenovo-phoenix/ + pmaports device/testing/device-lenovo-phoenix/
+# （当时"无需自定义包"的结论针对的是 deviceinfo 层面；设备包最终仍拆出，是为了
+# 把收 runlevel/mkinitfs/音频 wiring 从通用包上摘下来）。本文件留作历史。
 # Draft for Lenovo PHAB Plus PB1-770N, based on device-qcom-msm8916 + kiwi
-# 未验证，先用通用包启动，调通后再拆分为独立 device-lenovo-phoenix
 
 deviceinfo_format_version="0"
 deviceinfo_name="Lenovo PHAB Plus"

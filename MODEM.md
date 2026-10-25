@@ -19,10 +19,46 @@ PB1-770N 的基带是 MSM8939 集成 modem（MPSS.DPM.2.0.c12-00057-M8936FAAAANU
   UCM/混音器失配已定位并修复（卡名失配 + `RDAC2 MUX` 缺设定，改用
   `soc-qcom-msm8916-ucm`，见 `BOOT-STATUS.md` "耳机声道解决"），待上机复测。
 
-## 使用OpenRC时必须手动设置开机启动的服务
+## OpenRC 开机启动项（2026-10-24 起由包自动接线）
+
+曾需每次刷机后手动开启（`rc-update add <svc> default`）——当时拉进来的任何
+包都不负责启用它们：
+
  - modemmanager
  - rmtfs
  - msm-modem-uim-selection
+
+根因核对（2026-10-24，对 edge 镜像 2026-10-18 rootfs）：`msm-modem-uim-
+selection-openrc`/`rmtfs-openrc` 只装 initd+conf.d，**不带 rc-update 脚本**
+（已核验 rootfs `lib/apk/db/scripts.tar.gz`）；`postmarketos-base-ui` 只在
+plasma-mobile/sxmo/gnome 这类 UI 的 openrc 子包里启用 modemmanager，
+fbkeyboard 不启用；ModemManager 本体也没有任何依赖拉入（见下节）。
+
+现状：device 包（8-r9）`package()` 直接提供三个符号链接
+`/etc/runlevels/default/{modemmanager,rmtfs,msm-modem-uim-selection}`
+（同 `phoenix-usbgadget` 的 `local` 链接模式）。runlevel 全部取 **default**：
+上游 `soc-qcom-modem-openrc.post-install` 的口径（uim-selection 的 initd
+写的是 `need rmtfs`/`before modemmanager`，同为同 runlevel 语义），且
+2026-10-16 的启动时间线（mpss 于 t≈60s——用户态起跑后——上线）与
+`rmtfs -s` 在 default 阶段拉起 mss remoteproc 的行为吻合。已手动启用过的
+存量 rootfs 升级该包时为幂等 no-op。systemd 根文件系统不读
+`/etc/runlevels`，这几行只是无害的多余文件。
+
+q6voiced 仍由上游 `soc-qcom-msm8916-rproc-openrc` 的 post-install
+（`rc-update add q6voiced default`）负责，本包不重复接线。**注意**：
+2026-10-18 构建的 fresh rootfs chroot 里，该 post-install（27-r0）存在
+但并未产生 `/etc/runlevels/default/q6voiced` 链接，而同一事务的
+`postmarketos-base-ui-openrc` post-install 正常生效——原因未查明（疑与
+安装事务内 `-openrc` 子包和其 target 的提交顺序有关）。新刷镜像首启后应
+核对 `rc-update show`：modemmanager/rmtfs/msm-modem-uim-selection 应已
+因本包接线在列；q6voiced 若缺就补 `rc-update add q6voiced default`
+（不影响短信，只影响通话音频——对这颗固件本就无可验证场景）。
+
+对已刷机但 device 包还没升到 r9 的系统，一条命令补齐（幂等）：
+
+```
+for s in modemmanager rmtfs msm-modem-uim-selection; do rc-update add $s default; done
+```
 
 ## 用户空间链
 
@@ -33,11 +69,17 @@ firmware-lenovo-phoenix-modem  # /lib/firmware/{mba.mbn,modem.mdt,modem.bNN}
 soc-qcom-msm8916-rproc         # msm8916 通用包的子包: msm-modem + q6voiced 依赖
 q6voiced                       # 通话音频(对这颗固件而言无意义, 保留依赖链)
 msm-modem msm-modem-uim-selection   # uim 槽位选择; 拉入 rmtfs libqmi qmi-utils
+modemmanager                   # SMS/运营商标识; fbkeyboard+OpenRC 无包代拉
 ```
 
-`ModemManager` 由 `postmarketos-base-ui` 依赖带入。rmtfs 走 QRTR（内核
+`ModemManager`（2026-10-24）改为 device 包 depends **显式**依赖。旧口径
+"由 `postmarketos-base-ui` 依赖带入"在 OpenRC/fbkeyboard 镜像上不成立：
+base-ui-62 的依赖表只有 `postmarketos-base-ui-modemmanager` 等子包组，
+仅当 MM 已装才投递配置文件，本地 fresh rootfs 的包数据库里根本没有
+modemmanager 本体（设备上 2026-10-16 起用 MM，是当时在设备上手动 apk add
+的最可信解释）。rmtfs 走 QRTR（内核
 `qcom,rmtfs-mem` + `QCOM_RMTFS_MEM`），dts 的 rmtfs 区域放大到 stock 的
-0x160000（dtsi 默认 0xe0000 不够 EFS 用）。
+0x160000（dtsi 默认 0xe0000 不够 EFS 用）。开机启动接线见上节。
 
 ## DTS 要点
 

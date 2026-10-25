@@ -68,9 +68,12 @@ magnetometer (no mainline driver).
   discharge (else SoC strands high after unplug).
 - `audio/msm8916-audio-init.sh` + `audio/90-msm8916-audio.rules` — udev
   applies the proven mixer set when the sound card appears.
-- `ucm2/phoenix/` — PipeWire/UCM profile (Speaker + Headphones + Mic).
 - `0002-dts-msm8916-phoenix-dtb-files.patch` — lk2nd patch so `fdtdir`
   auto-discovers the phoenix DTB (no extlinux hand-edits needed).
+- `aports/` — complete mirror of the dedicated pmOS packages
+  (`device-lenovo-phoenix` + `linux-lenovo-phoenix`, split from the generic
+  qcom-msm8916 packages 2026-10-24); live copies in the pmbootstrap pmaports
+  working tree — see `aports/README.md`.
 - `panel-nt35532-skuk-initseq.c.inc` — init sequence extracted from downstream.
 - `downstream-phoenix.dts` — decompiled Lineage DTB (reference).
 - `downstream-pb1770m/` — downstream DTS excerpts (sensors, panel).
@@ -86,19 +89,16 @@ magnetometer (no mainline driver).
 
 ## Build & flash (short version)
 
-Requires pmbootstrap with `device-qcom-msm8916`, UI `fbkeyboard`.
-Copy `msm8939-lenovo-phoenix.dts`, `panel/panel-novatek-nt35532.c`,
-`panel/panel-novatek-nt35532.kconfig` and `power/qcom-pon.c` into
-`device/testing/linux-postmarketos-qcom-msm8916`, wire them up in
-`APKBUILD` `prepare()` (see git history), enable
-`CONFIG_DRM_PANEL_NOVATEK_NT35532`. The Adreno firmware (`a420_pm4/pfp.fw`)
-must be in the initramfs, otherwise the early `msm` probe fails its firmware
-request: ship `30-gpu-firmware.files` (see db820c precedent) into
-`/usr/share/mkinitfs/files` via the `device-qcom-msm8916` package so mkinitfs
-picks it up. Build, install, then:
+Requires pmbootstrap with the device selected as `lenovo-phoenix`
+(`pmbootstrap config device lenovo-phoenix`; independent device package
+`device-lenovo-phoenix` + kernel `linux-lenovo-phoenix`, split out of
+`device-qcom-msm8916` on 2026-10-24 — the two generic packages are kept
+pristine upstream again), UI `fbkeyboard`. Both package trees are complete in
+`aports/` (see `aports/README.md`); the live copies are the pmbootstrap
+pmaports working tree. Build, install, then:
 
 ```
-./split-image.sh <qcom-msm8916.img> ./images
+./split-image.sh <combined.img> ./images
 fastboot flash boot lk2nd.img   # lk2nd 23.1 + dtb-files patch, one time
 fastboot flash -S 200M system ./images/boot-part.img
 fastboot flash -S 200M userdata ./images/root-part.img
@@ -114,8 +114,9 @@ Nothing below is vendored except where noted; pmaports edits live as local
 modifications until (if ever) they go upstream.
 
 - Kernel base: [msm8916-mainline/linux](https://github.com/msm8916-mainline/linux)
-  (`v6.12.1-msm8916`), packaged via pmaports
-  `device/testing/linux-postmarketos-qcom-msm8916`.
+  (`v6.12.1-msm8916`), packaged as the phoenix fork
+  `device/testing/linux-lenovo-phoenix` (split from
+  `linux-postmarketos-qcom-msm8916` 2026-10-24).
 - Bootloader: [msm8916-mainline/lk2nd](https://github.com/msm8916-mainline/lk2nd);
   our `0002-dts-msm8916-phoenix-dtb-files.patch` only enables the phoenix DTB.
 - Panel driver: generated with
@@ -132,10 +133,12 @@ modifications until (if ever) they go upstream.
 - SMB358 register map: `smb358-charger.c` from the
   [Oculus Go kernel](https://github.com/facebookincubator/oculus-linux-kernel)
   (reference only — our driver is a fresh read-only implementation).
-- Device package base: pmaports `device/testing/device-qcom-msm8916`
-  (Nikita Travkin). Local additions: NT35532 in initramfs, `msm` restored,
-  a420 firmware file list (pattern copied from archived `device-arrow-db820c`
-  `30-gpu-firmware.files`), audio udev/script/UCM, `alsa-utils` dep.
+- Device package: `device/testing/device-lenovo-phoenix` (own package, split
+  from pmaports `device-qcom-msm8916` 2026-10-24; the generic package is again
+  pristine upstream). Local additions inside: NT35532 in initramfs, `msm`
+  restored, a420 firmware file list (pattern copied from archived
+  `device-arrow-db820c` `30-gpu-firmware.files`), audio udev/script + UCM dep
+  (`soc-qcom-msm8916-ucm`), `alsa-utils` dep, modem-stack runlevel wiring.
 - Audio template: in-tree `msm8939-huawei-kiwi.dts` (dai-links, mic routing,
   MBHC thresholds); machine driver `apq8016-sbc-sndcard` used as-is.
 - Firmware blobs: `linux-firmware` (a420 GPU, via distro packages) and the
