@@ -1,0 +1,353 @@
+--- a/drivers/media/platform/qcom/camss/camss-csid-4-1.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-4-1.c
+@@ -11,6 +11,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
++#include <linux/moduleparam.h>
+ #include <linux/of.h>
+ 
+ #include "camss-csid.h"
+@@ -44,6 +45,28 @@
+ #define CAMSS_CSID_TG_DT_n_CGG_0(n)	(0x0ac + 0xc * (n))
+ #define CAMSS_CSID_TG_DT_n_CGG_1(n)	(0x0b0 + 0xc * (n))
+ #define CAMSS_CSID_TG_DT_n_CGG_2(n)	(0x0b4 + 0xc * (n))
++#define CAMSS_CSID_CAPTURED_SHORT_PKT	0x074
++
++/*
++ * r77-F front-camera diagnostics (temporary, drop before upstreaming).
++ *
++ * CORE_CTRL_0 (lane count / lane assignment) and CORE_CTRL_1 (phy select)
++ * are only written for a real (non test-generator) stream, and are the only
++ * CSI input configuration the CSID test generator does not exercise.
++ * These overrides keep the current behaviour at 0 / 0xffffffff and let the
++ * next device round A/B them without a DT or another driver rebuild.
++ *
++ *   csid_lane_assign    raw lane_assign value (0 = auto, from DW/DT parse)
++ *   csid_lane_cnt       lane count (0 = auto)
++ *   csid_core_ctrl1_lo  low nibble of CORE_CTRL_1 (0xffffffff = auto = 0x9,
++ *                       the stock downstream value is 0xf)
++ */
++static uint csid_lane_assign;
++module_param_named(csid_lane_assign, csid_lane_assign, uint, 0644);
++static uint csid_lane_cnt;
++module_param_named(csid_lane_cnt, csid_lane_cnt, uint, 0644);
++static uint csid_core_ctrl1_lo = 0xffffffff;
++module_param_named(csid_core_ctrl1_lo, csid_core_ctrl1_lo, uint, 0644);
+ 
+ static void csid_configure_stream(struct csid_device *csid, u8 enable)
+ {
+@@ -88,21 +111,49 @@
+ 			writel_relaxed(val, csid->base + CAMSS_CSID_TG_DT_n_CGG_2(0));
+ 		} else {
+ 			struct csid_phy_config *phy = &csid->phy;
++			u32 lane_assign = phy->lane_assign;
++			u8 lane_cnt = phy->lane_cnt;
++			u32 ctrl1_lo;
+ 
+ 			input_format = &csid->fmt[MSM_CSID_PAD_SINK];
+ 			format = csid_get_fmt_entry(csid->res->formats->formats,
+ 						    csid->res->formats->nformats,
+ 						    input_format->code);
+ 
+-			val = phy->lane_cnt - 1;
+-			val |= phy->lane_assign << 4;
+-
++			if (csid_lane_cnt)
++				lane_cnt = csid_lane_cnt;
++			if (csid_lane_assign)
++				lane_assign = csid_lane_assign;
++
++			val = lane_cnt - 1;
++			val |= lane_assign << 4;
++
++			dev_info(csid->camss->dev,
++				 "CSID%u CORE_CTRL_0=0x%08x (lane_cnt=%u lane_assign=0x%x%s%s)\n",
++				 csid->id, val, lane_cnt, lane_assign,
++				 csid_lane_cnt ? " [count-override]" : "",
++				 csid_lane_assign ? " [assign-override]" : "");
+ 			writel_relaxed(val, csid->base + CAMSS_CSID_CORE_CTRL_0);
++			dev_info(csid->camss->dev,
++				 "CSID%u CORE_CTRL_0 readback=0x%08x\n",
++				 csid->id,
++				 readl_relaxed(csid->base + CAMSS_CSID_CORE_CTRL_0));
+ 
++			ctrl1_lo = (csid_core_ctrl1_lo == 0xffffffff) ?
++					0x9 : (csid_core_ctrl1_lo & 0xf);
+ 			val = phy->csiphy_id << 17;
+-			val |= 0x9;
++			val |= ctrl1_lo;
+ 
++			dev_info(csid->camss->dev,
++				 "CSID%u CORE_CTRL_1=0x%08x (csiphy_id=%u low=0x%x%s)\n",
++				 csid->id, val, phy->csiphy_id, ctrl1_lo,
++				 csid_core_ctrl1_lo != 0xffffffff ?
++					" [low-override]" : "");
+ 			writel_relaxed(val, csid->base + CAMSS_CSID_CORE_CTRL_1);
++			dev_info(csid->camss->dev,
++				 "CSID%u CORE_CTRL_1 readback=0x%08x\n",
++				 csid->id,
++				 readl_relaxed(csid->base + CAMSS_CSID_CORE_CTRL_1));
+ 		}
+ 
+ 		/* Config LUT */
+@@ -119,6 +170,14 @@
+ 		val |= CAMSS_CSID_CID_n_CFG_RDI_MODE_RAW_DUMP;
+ 		writel_relaxed(val, csid->base + CAMSS_CSID_CID_n_CFG(cid));
+ 
++		dev_info(csid->camss->dev,
++			 "CSID%u %s: LUT[VC%u]=0x%08x CID%u_CFG=0x%08x (dt=0x%x decode=%u)\n",
++			 csid->id, tg->enabled ? "TG" : "real", vc,
++			 readl_relaxed(csid->base + CAMSS_CSID_CID_LUT_VC_n(vc)),
++			 cid,
++			 readl_relaxed(csid->base + CAMSS_CSID_CID_n_CFG(cid)),
++			 format->data_type, format->decode_format);
++
+ 		if (tg->enabled) {
+ 			val = CAMSS_CSID_TG_CTRL_ENABLE;
+ 			writel_relaxed(val, csid->base + CAMSS_CSID_TG_CTRL);
+@@ -156,6 +215,25 @@
+ 	value = readl_relaxed(csid->base + CAMSS_CSID_IRQ_STATUS);
+ 	writel_relaxed(value, csid->base + CAMSS_CSID_IRQ_CLEAR_CMD);
+ 
++	/*
++	 * r77-F diagnostics: bit 9 is "short packet captured" (the stock
++	 * downstream ISR reads CAMSS_CSID_CAPTURED_SHORT_PKT on it).  If
++	 * FS/FE reach CSID while the real stream fails, this fires; enable
++	 * with dynamic debug on camss-csid-4-1.c at debug level.
++	 */
++	dev_dbg_ratelimited(csid->camss->dev,
++			    "CSID%u IRQ status=0x%08x\n", csid->id, value);
++	if (value & BIT(9)) {
++		u32 short_pkt;
++
++		short_pkt = readl_relaxed(csid->base +
++					  CAMSS_CSID_CAPTURED_SHORT_PKT);
++		dev_info_ratelimited(csid->camss->dev,
++				     "CSID%u short packet: status=0x%08x captured=0x%08x dt=0x%02x\n",
++				     csid->id, value, short_pkt,
++				     short_pkt >> 24);
++	}
++
+ 	if ((value >> 11) & 0x1)
+ 		complete(&csid->reset_complete);
+ 
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.c
+@@ -12,6 +12,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
++#include <linux/moduleparam.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+@@ -24,6 +25,58 @@
+ 
+ #define MSM_CSIPHY_NAME "msm_csiphy"
+ 
++/*
++ * r77-F front-camera diagnostics (temporary, drop before upstreaming).
++ *
++ * Override the CSI-2 data-lane map of CSIPHY1 without a DT rebuild.
++ * csiphy1_lane_pos packs up to four lane positions as nibbles (lane0 =
++ * bits[3:0], lane1 = bits[7:4], ...); 0xffffffff keeps the parsed DT
++ * value.  csiphy1_lane_cnt may only *reduce* the parsed lane count (the
++ * lane array is sized by the DT parse).  Defaults keep today's behaviour.
++ *
++ * A/B pairs: <0 2> pos=0x20, <0 1> pos=0x10, <1 2> pos=0x21,
++ * <0 3> pos=0x30, <2 3> pos=0x32 (pair with csid_lane_assign =
++ * pos0 | pos1 << 4).
++ */
++static uint csiphy1_lane_pos = 0xffffffff;
++module_param_named(csiphy1_lane_pos, csiphy1_lane_pos, uint, 0644);
++static uint csiphy1_lane_cnt;
++module_param_named(csiphy1_lane_cnt, csiphy1_lane_cnt, uint, 0644);
++
++static void csiphy_apply_lane_override(struct csiphy_device *csiphy,
++				       struct csiphy_config *cfg)
++{
++	struct csiphy_lanes_cfg *lc;
++	unsigned int i, n;
++
++	if (csiphy->id != 1 || !cfg->csi2)
++		return;
++
++	lc = &cfg->csi2->lane_cfg;
++	n = lc->num_data;
++
++	/* The lane array is sized by the DT parse: only reducing is safe. */
++	if (csiphy1_lane_cnt && csiphy1_lane_cnt < n) {
++		n = csiphy1_lane_cnt;
++		lc->num_data = n;
++	}
++
++	if (csiphy1_lane_pos == 0xffffffff)
++		return;
++
++	for (i = 0; i < n && i < 4; i++)
++		lc->data[i].pos = (csiphy1_lane_pos >> (4 * i)) & 0xf;
++
++	dev_info(csiphy->camss->dev,
++		 "CSIPHY%u lane override: num_data=%u positions=%u,%u,%u,%u (param=0x%08x)\n",
++		 csiphy->id, n,
++		 n > 0 ? lc->data[0].pos : 0,
++		 n > 1 ? lc->data[1].pos : 0,
++		 n > 2 ? lc->data[2].pos : 0,
++		 n > 3 ? lc->data[3].pos : 0,
++		 csiphy1_lane_pos);
++}
++
+ static const struct csiphy_format_info formats_8x16[] = {
+ 	{ MEDIA_BUS_FMT_UYVY8_1X16, 8 },
+ 	{ MEDIA_BUS_FMT_VYUY8_1X16, 8 },
+@@ -253,12 +306,19 @@
+ {
+ 	struct csiphy_config *cfg = &csiphy->cfg;
+ 	s64 link_freq;
+-	u8 lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
+-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+-	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
++	u8 lane_mask;
++	u8 bpp;
++	u8 num_lanes;
+ 	u8 val;
+ 
++	csiphy_apply_lane_override(csiphy, cfg);
++
++	lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
++	bpp = csiphy_get_bpp(csiphy->res->formats->formats,
++			     csiphy->res->formats->nformats,
++			     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
++	num_lanes = cfg->csi2->lane_cfg.num_data;
++
+ 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
+ 
+ 	if (link_freq < 0) {
+@@ -267,6 +327,16 @@
+ 		return -EINVAL;
+ 	}
+ 
++	dev_info(csiphy->camss->dev,
++		 "CSIPHY%u stream_on: link_freq=%lld bpp=%u num_lanes=%u lane_mask=0x%x clk_pos=%u positions=%u,%u,%u,%u csid=%u\n",
++		 csiphy->id, link_freq, bpp, num_lanes, lane_mask,
++		 cfg->csi2->lane_cfg.clk.pos,
++		 num_lanes > 0 ? cfg->csi2->lane_cfg.data[0].pos : 0,
++		 num_lanes > 1 ? cfg->csi2->lane_cfg.data[1].pos : 0,
++		 num_lanes > 2 ? cfg->csi2->lane_cfg.data[2].pos : 0,
++		 num_lanes > 3 ? cfg->csi2->lane_cfg.data[3].pos : 0,
++		 cfg->csid_id);
++
+ 	if (csiphy->base_clk_mux) {
+ 		val = readl_relaxed(csiphy->base_clk_mux);
+ 		if (cfg->combo_mode && (lane_mask & 0x18) == 0x18) {
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-1-0.c
+@@ -449,6 +449,12 @@
+ 		else
+ 			l = c->data[i].pos * 2;
+ 
++		dev_dbg(csiphy->camss->dev,
++			"CSIPHY%u lane block l=%u (data_pos=%u, clock=%u)\n",
++			csiphy->id, l,
++			i == c->num_data ? 0xff : c->data[i].pos,
++			i == c->num_data ? 1 : 0);
++
+ 		val = CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG;
+ 		val |= 0x17;
+ 		writel_relaxed(val, csiphy->base + CSIPHY_3PH_LNn_CFG1(l));
+@@ -578,6 +584,11 @@
+ 
+ 	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
+ 
++	dev_dbg(csiphy->camss->dev,
++		"CSIPHY%u lanes_enable: link_freq=%lld timer_clk=%u settle_cnt=%u num_data=%u\n",
++		csiphy->id, link_freq, csiphy->timer_clk_rate, settle_cnt,
++		c->num_data);
++
+ 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
+ 	for (i = 0; i < c->num_data; i++)
+ 		val |= BIT(c->data[i].pos * 2);
+--- a/drivers/media/platform/qcom/camss/camss-ispif.c
++++ b/drivers/media/platform/qcom/camss/camss-ispif.c
+@@ -836,6 +836,15 @@
+ 					  intf, cid, vfe, 1);
+ 		ispif_set_intf_cmd(ispif, CMD_ENABLE_FRAME_BOUNDARY,
+ 				   intf, vfe, vc);
++
++		/* r77-F diagnostics: stream-on register snapshot (safe: no MMIO while streaming) */
++		dev_info(ispif->camss->dev,
++			 "ISPIF line%u: csid=%u vfe=%u intf=%d INPUT_SEL=0x%08x INTF_CMD_0=0x%08x RDI0_CID_MASK=0x%08x RDI0_STATUS=0x%08x\n",
++			 line->id, csid, vfe, intf,
++			 readl_relaxed(ispif->base + ISPIF_VFE_m_INTF_INPUT_SEL(vfe)),
++			 readl_relaxed(ispif->base + ISPIF_VFE_m_INTF_CMD_0(vfe)),
++			 readl_relaxed(ispif->base + ISPIF_VFE_m_RDI_INTF_n_CID_MASK(vfe, 0)),
++			 readl_relaxed(ispif->base + ISPIF_VFE_m_RDI_INTF_n_STATUS(vfe, 0)));
+ 	} else {
+ 		mutex_lock(&ispif->config_lock);
+ 		ispif_set_intf_cmd(ispif, CMD_DISABLE_FRAME_BOUNDARY,
+--- a/drivers/media/i2c/ov5693.c
++++ b/drivers/media/i2c/ov5693.c
+@@ -319,6 +319,33 @@
+ 	{CCI_REG8(0x5041), 0x14}
+ };
+ 
++/*
++ * r77-F front-camera diagnostics (temporary, drop before upstreaming).
++ *
++ * The upstream register table targets a different OV5693 module; the stock
++ * Lenovo "sunny_q5v41b" module additionally programmes the MIPI and
++ * output-format registers below (decoded from libmmcamera_ov5693.so,
++ * camera-ref/o5693-stdlib/stock_tables.c).  Off by default: set
++ * /sys/module/ov5693/parameters/stock_mipi_regs=1 and restart the stream to
++ * A/B in the same boot.
++ */
++static const struct cci_reg_sequence ov5693_stock_mipi_regs[] = {
++	{ CCI_REG8(0x4303), 0x00 },
++	{ CCI_REG8(0x4304), 0x08 },
++	{ CCI_REG8(0x4311), 0x04 },
++	{ CCI_REG8(0x4315), 0x01 },
++	{ CCI_REG8(0x4806), 0x00 },
++	{ CCI_REG8(0x4816), 0x52 },
++	{ CCI_REG8(0x4831), 0x64 },
++	{ CCI_REG8(0x5000), 0x06 },
++	{ CCI_REG8(0x5001), 0x01 },
++	{ CCI_REG8(0x5002), 0x00 },
++	{ CCI_REG8(0x5046), 0x0a },
++};
++
++static bool stock_mipi_regs;
++module_param_named(stock_mipi_regs, stock_mipi_regs, bool, 0644);
++
+ static const struct v4l2_rect ov5693_default_crop = {
+ 	.left = OV5693_ACTIVE_START_LEFT,
+ 	.top = OV5693_ACTIVE_START_TOP,
+@@ -982,6 +1009,27 @@
+ 			goto err_power_down;
+ 		}
+ 
++		/* r77-F diagnostics: optional stock-module MIPI/output regs */
++		if (stock_mipi_regs) {
++			ret = cci_multi_reg_write(ov5693->regmap,
++						  ov5693_stock_mipi_regs,
++						  ARRAY_SIZE(ov5693_stock_mipi_regs),
++						  NULL);
++			if (ret)
++				dev_warn(ov5693->dev,
++					 "r77-F stock MIPI regs failed: %d\n", ret);
++			else
++				dev_info(ov5693->dev,
++					 "r77-F stock MIPI regs applied\n");
++		}
++
++		dev_info(ov5693->dev,
++			 "r77-F stream_on: xvclk=%lu link_freq=%lld hts=%u vts=%u\n",
++			 ov5693->xvclk ? clk_get_rate(ov5693->xvclk) : 0,
++			 ov5693->ctrls.link_freq ?
++				(long long)ov5693->ctrls.link_freq->cur.val : 0LL,
++			 OV5693_FIXED_PPL, ov5693->mode.vts);
++
+ 		ret = ov5693_enable_streaming(ov5693, true);
+ 		mutex_unlock(&ov5693->lock);
+ 	} else {

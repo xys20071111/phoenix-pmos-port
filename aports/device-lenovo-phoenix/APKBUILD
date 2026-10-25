@@ -1,0 +1,118 @@
+# Reference: <https://postmarketos.org/devicepkg>
+#
+# phoenix device package, split out of device-qcom-msm8916 (2026-10): carries
+# every phoenix-local change that used to live as local modifications of the
+# generic package (audio init + udev rules, a420 GPU firmware list package,
+# modem stack OpenRC wiring). Content and pkgver/pkgrel numbering continue
+# from device-qcom-msm8916 pkgver=8 pkgrel=9 so BUILD.md history maps 1:1.
+maintainer="Tom Xue <xys20071111@hotmail.com>"
+pkgname=device-lenovo-phoenix
+pkgdesc="Lenovo PHAB Plus (PB1-770N, MSM8939)"
+pkgver=8
+pkgrel=9
+url="https://postmarketos.org"
+license="MIT"
+arch="aarch64"
+options="!check !archcheck"
+depends="
+	firmware-qcom-adreno-a420
+	firmware-lenovo-phoenix-venus
+	firmware-lenovo-phoenix-modem
+	soc-qcom-msm8916-rproc
+	q6voiced
+	msm-modem
+	msm-modem-uim-selection
+	modemmanager
+	alsa-utils
+	soc-qcom-msm8916-ucm
+	firmware-qcom-db410c-wcnss-nv
+	msm-firmware-loader
+	postmarketos-base
+	soc-qcom-msm8916
+"
+makedepends="devicepkg-dev"
+source="
+	deviceinfo
+	kernel-cmdline.conf
+	modules-initfs
+	30-gpu-firmware.files
+	msm8916-audio-init.sh
+	90-msm8916-audio.rules
+"
+subpackages="
+	$pkgname-kernel-extlinux:kernel_extlinux
+	$pkgname-kernel-efi:kernel_efi
+"
+
+build() {
+	devicepkg_build $startdir $pkgname
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+
+	# HACK: For devices that don't have a nv file in persist we
+	# temporarily link the db410c file to the expected location.
+	# It will be overriden if the file is in persist or when user
+	# installs the device-specific firmware packages.
+	mkdir -p "$pkgdir"/usr/lib/firmware/wlan/prima/
+	ln -s /usr/lib/firmware/qcom/apq8016/WCNSS_qcom_wlan_nv_sbc.bin \
+		"$pkgdir"/usr/lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin
+
+	# Adreno a420 firmware into initramfs (same pattern as db820c's
+	# 30-gpu-firmware.files): msm probes display+GPU in initramfs stage,
+	# but the firmware only exists on rootfs -> early probe always fails.
+	install -Dm644 "$srcdir/30-gpu-firmware.files" \
+		"$pkgdir/usr/share/mkinitfs/files/30-gpu-firmware.files"
+
+	# msm8916 audio defaults: udev applies proven mixer set when the
+	# sound card appears (init-agnostic, survives reflash).
+	# UCM comes from soc-qcom-msm8916-ucm (msm8916-mainline
+	# alsa-ucm-conf, dir ucm2/msm8916 == card name).
+	install -Dm755 "$srcdir/msm8916-audio-init.sh" \
+		"$pkgdir/usr/libexec/msm8916-audio-init.sh"
+	install -Dm644 "$srcdir/90-msm8916-audio.rules" \
+		"$pkgdir/usr/lib/udev/rules.d/90-msm8916-audio.rules"
+
+	# OpenRC boot wiring for the phoenix modem stack:
+	# modemmanager, rmtfs, msm-modem-uim-selection used to have to be
+	# enabled by hand on every flash (see MODEM.md): no pulled-in
+	# package enables them -- on the current edge mirror the -openrc
+	# subpackages of msm-modem/rmtfs ship conf+initd with no rc-update
+	# scripts, and postmarketos-base-ui does not enable modemmanager on
+	# fbkeyboard. Ship the runlevel symlinks like phoenix-usbgadget does
+	# for `local`: deterministic on fresh installs, no-op on a rootfs
+	# that already has them. Runlevel: `default` for all three,
+	# following upstream soc-qcom-modem-openrc (uim-selection's initd
+	# does `need rmtfs;` `before modemmanager`, same-runlevel
+	# semantics). q6voiced is kept upstream-managed via
+	# soc-qcom-msm8916-rproc-openrc. systemd rootfs variants ignore
+	# /etc/runlevels entirely.
+	install -d "$pkgdir"/etc/runlevels/default
+	ln -s /etc/init.d/modemmanager \
+		"$pkgdir"/etc/runlevels/default/modemmanager
+	ln -s /etc/init.d/rmtfs \
+		"$pkgdir"/etc/runlevels/default/rmtfs
+	ln -s /etc/init.d/msm-modem-uim-selection \
+		"$pkgdir"/etc/runlevels/default/msm-modem-uim-selection
+}
+
+kernel_extlinux() {
+	pkgdesc="Use lk2nd to boot via extlinux.conf"
+	depends="linux-lenovo-phoenix"
+	devicepkg_subpackage_kernel $startdir $pkgname $subpkgname
+}
+
+kernel_efi() {
+	pkgdesc="Use U-Boot to boot via EFI"
+	depends="linux-lenovo-phoenix systemd-boot"
+	devicepkg_subpackage_kernel $startdir $pkgname $subpkgname
+}
+sha512sums="
+07cef75aebaa102ec91a047ddb4b308472154d5db602080785991cc05cfdf0bc8a0e67548c434766cd73113347b9bc72631228e2a1945ecc5fe3816c29da1fce  deviceinfo
+37e1e5f8839b624ab3eb850a24ed4daeb61a651257a1fb593f49cb869323e5d1b339c831a18eb26a9d7bd0a618ea9eb2bb9bf3882133af5f2606a878e6d39c67  kernel-cmdline.conf
+e51a078d01db7a546c0314115f74767dd6448b01cc75387ab158236c52647ea6858c9821b322a75243230d2f71731c21697e18ca8f1e5e35d27844cdacb9bc10  modules-initfs
+c3274afd6deebba1a54e5fb5e2c8747254a7ab02bac16a12173e19400edd596cf32290cd33dff2b1e646c448c87bbe4abf29e588de3e3a1d150eab866f4cd980  30-gpu-firmware.files
+b43ac3c754a8c588a2d0cb070e05bc7d32c9fdd4b16f9349542fe7a3fded722a069d3ea3118011cf27d5bf40e1da188dab7ef93d6a8d00696ce3bea40854d608  msm8916-audio-init.sh
+140017ab46d5cef169b52c05b38a5bd9b223e4dfe44ec55f76b7f5223edf4f31b7a6c51fdd98c2758d1269cfa2dde0243e9d7ade608e611f20d94a84a3e9ad97  90-msm8916-audio.rules
+"

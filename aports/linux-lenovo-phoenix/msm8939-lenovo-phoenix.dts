@@ -1,0 +1,716 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Lenovo PHAB Plus PB1-770N (phoenix) - initial mainline port, console bringup
+ * SoC: MSM8939, panel NT35532 skuk video 1080x1920 (driver in panel/, wired below),
+ * touch GT9xx on blsp_i2c6
+ * Extracted from downstream boot.img DTB (qcom,msm8939-qrd-skuk / PHOENIX):
+ *  - panel: qcom,mdss_dsi_nt35532_1080p_skuk_video, 1080x1920, burst_mode
+ *  - touch: goodix,gt9xx @0x5d on i2c@78ba000, reset TLMM 12, irq TLMM 13
+ *  - vol_up TLMM 107, hall TLMM 117, sdc2_cd TLMM 38, usb_id TLMM 110
+ *  - sensors on i2c: bma2x2@0x18, ltr559@0x23, mmc3524x@0x30, tps65132@0x3e
+ */
+
+/dts-v1/;
+
+#include "msm8939-pm8916.dtsi"
+/* Modem + QDSP6 audio: &mpss (PIL), &bam_dmux, APR/q6 dais (audio +
+ * CS-Voice), &memshare/&gps_mem. Swaps &sound to modem-qdsp6 sndcard
+ * and puts &lpass behind the modem ("reserved"). */
+#include "msm8916-modem-qdsp6.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "Lenovo PHAB Plus";
+	compatible = "lenovo,phoenix", "qcom,msm8939";
+	chassis-type = "handset";
+
+	aliases {
+		mmc0 = &sdhc_1; /* SDC1 eMMC slot */
+		mmc1 = &sdhc_2; /* SDC2 SD card slot */
+		serial0 = &blsp_uart2;
+	};
+
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion-polymer";
+		/* downstream: v-cutoff 3.4V, float 4.35V (pb1770m batterydata,
+		 * scud-4v35 profile, fcc 3500mAh). */
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4350000>;
+		constant-charge-voltage-max-microvolt = <4350000>;
+		charge-full-design-microamp-hours = <3500000>;
+		/* OCV->SoC: downstream pc-temp-ocv-lut 25C column
+		 * (batterydata-qrd-skuk-scud-4v35-3600mah.dtsi).
+		 * Without this, ocv2cap returns -EINVAL and capacity reads 0%
+		 * -> desktop power managers orderly-shutdown the machine. */
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 =
+			<4326000 100>, <4259000 95>, <4202000 90>,
+			<4149000 85>, <4097000 80>, <4059000 75>,
+			<3988000 70>, <3960000 65>, <3916000 60>,
+			<3870000 55>, <3840000 50>, <3818000 45>,
+			<3801000 40>, <3786000 35>, <3772000 30>,
+			<3756000 25>, <3738000 20>, <3718000 16>,
+			<3700000 13>, <3690000 11>, <3689000 10>,
+			<3688000 9>, <3686000 8>, <3682000 7>,
+			<3674000 6>, <3651000 5>, <3608000 4>,
+			<3552000 3>, <3478000 2>, <3366000 1>,
+			<3128000 0>;
+	};
+
+	chosen {
+		stdout-path = "serial0";
+	};
+
+	reserved-memory {
+		qseecom_mem: qseecom@84a00000 {
+			reg = <0x0 0x84a00000 0x0 0x1600000>;
+			no-map;
+		};
+
+		/* downstream pstore region (0x9ff00000, 1M). Vital for
+		 * post-mortem: poweroff/power issues leave no serial. */
+		ramoops@9ff00000 {
+			compatible = "ramoops";
+			reg = <0x0 0x9ff00000 0x0 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x20000>;
+			ftrace-size = <0x00>;
+			pmsg-size = <0x20000>;
+		};
+	};
+
+	gpio-hall-sensor {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&gpio_hall_sensor_default>;
+		pinctrl-names = "default";
+
+		label = "GPIO Hall Effect Sensor";
+
+		event-hall-sensor {
+			label = "Hall Effect Sensor";
+			gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			linux,can-disable;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&gpio_keys_default>;
+		pinctrl-names = "default";
+
+		label = "GPIO Buttons";
+
+		button-volume-up {
+			label = "Volume Up";
+			gpios = <&tlmm 107 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+		};
+	};
+
+	usb_id: usb-id {
+		compatible = "linux,extcon-usb-gpio";
+		id-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&usb_id_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&blsp_i2c2 {
+	status = "okay";
+
+	/* PB1-770N populated: bma2x2 + ltr559 + mmc3524x (+tps65132).
+	 * (full variant list in downstream-pb1770m/msm8939-qrd-pb1770m.dtsi:
+	 *  apds9930/mp6050/mc3xxx are NOT populated on this unit.) */
+
+	accelerometer@18 {
+		/* downstream bosch,bma2x2, int1=112 int2=114, place=6 */
+		compatible = "bosch,bma255";
+		reg = <0x18>;
+
+		interrupts-extended = <&tlmm 112 IRQ_TYPE_EDGE_RISING>,
+				      <&tlmm 114 IRQ_TYPE_EDGE_RISING>;
+
+		vdd-supply = <&pm8916_l17>;
+		vddio-supply = <&pm8916_l6>;
+
+		/* Orientation (measured live, 2026-10-14, raw LSB @0.306458):
+		 * flat/up:(0,0,-1)g, portrait: (0,-1,0)g, landscape-CW: (-1,0,0)g.
+		 * Final matrix diag(-1,1,-1) (180 deg about Y) found by hwdb
+		 * iteration: identity got portrait right but landscape flipped;
+		 * diag(1,-1,-1) flipped everything; only X needed negation
+		 * (Y/Z signs: portrait/flat anchoring). det=+1. */
+		mount-matrix = "-1", "0", "0",
+			       "0", "1", "0",
+			       "0", "0", "-1";
+
+		pinctrl-0 = <&accel_int_default>;
+		pinctrl-names = "default";
+	};
+
+	light-sensor@23 {
+		compatible = "liteon,ltr559";
+		reg = <0x23>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <115 IRQ_TYPE_EDGE_FALLING>;
+
+		pinctrl-0 = <&light_int_default>;
+		pinctrl-names = "default";
+
+		vdd-supply = <&pm8916_l17>;
+		vddio-supply = <&pm8916_l6>;
+	};
+
+	/* memsic,mmc3524x@0x30: no mainline driver (mmc35240 is a
+	 * different chip). Skipped, revisit if a driver appears. */
+
+	regulator@3e {
+		compatible = "ti,tps65132";
+		reg = <0x3e>;
+
+		pinctrl-0 = <&reg_lcd_en_default>;
+		pinctrl-names = "default";
+
+		reg_lcd_pos: outp {
+			regulator-name = "outp";
+			regulator-min-microvolt = <5800000>;
+			regulator-max-microvolt = <5800000>;
+			/* downstream tps65132-pos = TLMM 97 */
+			enable-gpios = <&tlmm 97 GPIO_ACTIVE_HIGH>;
+			regulator-active-discharge = <1>;
+		};
+
+		reg_lcd_neg: outn {
+			regulator-name = "outn";
+			regulator-min-microvolt = <5800000>;
+			regulator-max-microvolt = <5800000>;
+			/* downstream tps65132-neg = TLMM 98 */
+			enable-gpios = <&tlmm 98 GPIO_ACTIVE_HIGH>;
+			regulator-active-discharge = <1>;
+		};
+	};
+};
+
+&blsp_i2c6 {
+	status = "okay";
+
+	touchscreen@5d {
+		compatible = "goodix,gt911";
+		reg = <0x5d>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <13 IRQ_TYPE_EDGE_FALLING>;
+
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+
+		/* mainline goodix driver mandates AVDD28 + VDDIO.
+		 * downstream touch rail assumption: AVDD28 (2.8V) from pm8916_l17,
+		 * VDDIO (1.8V) from pm8916_l6. TODO verify against schematics.
+		 */
+		AVDD28-supply = <&pm8916_l17>;
+		VDDIO-supply = <&pm8916_l6>;
+
+		/* downstream: display 1080x1920, panel 1080x2098 */
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <1920>;
+
+		pinctrl-0 = <&touchscreen_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&blsp_uart2 {
+	status = "okay";
+};
+
+/* ===== Cameras (Step 2: DTS wiring; rear needs the Step 3 driver) ===== */
+
+&camss {
+	/* port@0 -> csiphy0/csid0 (rear, 4-lane: stock blob lane_mask 0x1f
+	 * + lane_assign 0x4320), port@1 -> csiphy1/csid1 (front, 2-lane).
+	 * Lane numbering per qcom,msm8916-camss.yaml (and our
+	 * qcom-msm8939-camss.yaml): data-lanes values are the PHY data-lane
+	 * indexes 0/2/3/4 (1 = clock lane); the sensor side uses logical
+	 * indexes 1..N. mainline csiphy-2ph-1-0 and csid-4-1 accept these
+	 * as-is (lane_mask 1<<pos; lane_assign nibbles = values).
+	 */
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csiphy0_ep: endpoint {
+				data-lanes = <0 2 3 4>;
+				remote-endpoint = <&ov13850_ep>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csiphy1_ep: endpoint {
+				data-lanes = <0 2>;
+				remote-endpoint = <&ov5693_ep>;
+			};
+		};
+	};
+};
+
+&cci {
+	status = "okay";
+};
+
+&cci_i2c0 {
+	/* Rear: OV13850 (module sunny_q13v04b). reg 0x36 = stock slave info
+	 * (libmmcamera_ov13850.so i2c addr 0x6c in 8-bit form = 0x36 in
+	 * 7-bit). Bring-up caveat kept: the rear module never ACKs during
+	 * its standby window, so the driver's detect() still retries for
+	 * ~2.5 s. MCLK stays at the stock 24 MHz; the driver's per-mode
+	 * tables commit link freqs 300/320/600 MHz (4 lanes). */
+	ov13850: camera@36 {
+		compatible = "ovti,ov13850";
+		reg = <0x36>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_rear_default>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK0_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&pm8916_l17>;	/* cam_vana 2.85V */
+		dvdd-supply = <&pm8916_l2>;	/* cam_vdig 1.20V */
+		dovdd-supply = <&pm8916_l6>;	/* cam_vio  1.80V */
+
+		powerdown-gpios = <&tlmm 34 GPIO_ACTIVE_LOW>;	/* MCAM_STANDBY: phys LOW=standby */
+		reset-gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;	/* MCAM_RESET */
+
+		orientation = <1>;	/* back facing */
+		rotation = <90>;	/* downstream qcom,mount-angle */
+
+		port {
+			ov13850_ep: endpoint {
+				/* stock per-mode MIPI rates (4 lanes):
+				 * 300 MHz = HFR 60/90/120, 320 MHz = preview/
+				 * default_video (640 Mbps/lane), 600 MHz =
+				 * 4208x3120@30 (1.2 Gbps/lane). */
+				link-frequencies = /bits/ 64 <300000000
+								320000000
+								600000000>;
+				data-lanes = <1 2 3 4>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+
+	/* Front: OV5693 (module sunny_q5v41b). Slave address 0x10 MEASURED
+	 * (r52): chip-id 0x5690 read from 0x10 over the shared CCI bus
+	 * while the ov5693 driver held this module awake (polarity, rails
+	 * and 19.2 MHz MCLK all exercised as configured).
+	 * r86-F full-stock switch (kernel #82): this module's stock lib ran
+	 * 24 MHz MCLK and a 2-lane 800 Mbps/lane MIPI link (PLL div/mult
+	 * regs 0x30b4/0x30b3 baked in the r86-F driver table -> link-freq
+	 * 400 MHz DDR).  Upstream's 19.2 MHz/419.2 MHz choice produced
+	 * frames-loss "total=3/5" counters on every bisect candidate, the
+	 * stock 24 MHz m0 table is the fallback (CAMERA.md r78-r85). */
+	ov5693: camera@10 {
+		compatible = "ovti,ov5693";
+		reg = <0x10>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&camera_front_default>;
+
+		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		avdd-supply = <&pm8916_l17>;	/* cam_vana 2.85V */
+		dvdd-supply = <&pm8916_l2>;	/* cam_vdig 1.20V */
+		dovdd-supply = <&pm8916_l6>;	/* cam_vio  1.80V */
+
+		powerdown-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;	/* SCAM_STANDBY: phys LOW=standby */
+		reset-gpios = <&tlmm 28 GPIO_ACTIVE_LOW>;	/* SCAM_RESET */
+
+		orientation = <0>;	/* front facing */
+		rotation = <270>;	/* downstream qcom,mount-angle */
+
+		port {
+			ov5693_ep: endpoint {
+				link-frequencies = /bits/ 64 <400000000>;
+				data-lanes = <1 2>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+};
+
+&gpu {
+	status = "okay";
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	pinctrl-0 = <&mdss_default>;
+	pinctrl-1 = <&mdss_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	panel@0 {
+		compatible = "lenovo,phoenix-panel-nt35532";
+		reg = <0>;
+
+		/* vci rail assumption: pm8916_l8 (2.95V). TODO verify. */
+		vci-supply = <&pm8916_l8>;
+		vddi-supply = <&pm8916_l6>;
+		avee-supply = <&reg_lcd_neg>;
+		avdd-supply = <&reg_lcd_pos>;
+		/* downstream platform-reset-gpio = TLMM 25 */
+		reset-gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
+
+		/* NOTE: no backlight node yet (downstream uses DCS brightness).
+		 * Driver tolerates absence; brightness stays at bootloader level.
+		 */
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+};
+
+&mdss_dsi0_phy {
+	qcom,dsi-phy-regulator-ldo-mode;
+	status = "okay";
+};
+
+&blsp_i2c4 {
+	/* SMB358 charger (0x6A). Downstream i2c_4 = gpio14/15 = this bus.
+	 * Basis for USB OTG (see otg/OTG.md): the mainline smb347 driver
+	 * registers the fixed-5V "usb-vbus" regulator from the child node
+	 * below and drives the SMB358 boost (CMD_A bit4) when the host role
+	 * starts; ci_hdrc does devm_regulator_get_optional(&usb, "vbus")
+	 * -> provider missing would EPROBE-DEFER the whole controller.
+	 * Charging config stays mostly factory: battery node gives no
+	 * charge-current/temp properties, the only real write is the float
+	 * voltage (4.35V -> nearest reg 4.34V, conservative). STAT pin is
+	 * reconfigured active-low for interrupt reporting, downstream used
+	 * <62 8> (level-low) accordingly — but this board's STAT pin sits
+	 * asserted LOW at idle: with LEVEL_LOW the TLMM re-fires the IRQ
+	 * for as long as the pinned run repeats (measured ~27/s while
+	 * idle). old read-only driver ran this line for weeks on
+	 * IRQ_TYPE_EDGE_BOTH without CPU churn (a held line counts once
+	 * with edge trigger). EDGE_BOTH is the trigger; the driver refreshes
+	 * its cached input state on every pass anyway. */
+	status = "okay";
+
+	smb358: charger@6a {
+		compatible = "summit,smb358";
+		reg = <0x6a>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <62 IRQ_TYPE_EDGE_BOTH>;
+		pinctrl-0 = <&smb_int_default>;
+		pinctrl-names = "default";
+
+		monitored-battery = <&battery>;
+		summit,enable-usb-charging;
+		usb_vbus: usb-vbus {
+			regulator-name = "usb_vbus";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+			regulator-min-microamp = <750000>;
+			regulator-max-microamp = <750000>;
+		};
+	};
+};
+
+&pm8916_bms {
+	monitored-battery = <&battery>;
+	/* SMB358 (external charger) reports VBUS; lbc block is dead here. */
+	power-supplies = <&smb358>;
+	status = "okay";
+};
+
+/* Audio: routed through the modem's QDSP6 (msm8916-modem-qdsp6.dtsi),
+ * machine driver qcom,msm8916-qdsp6-sndcard. Once mpss runs it owns
+ * LPASS, so the old direct-LPASS card (apq8016-sbc-sndcard) is gone:
+ * &lpass must stay "reserved", media/call take MultiMedia/CS-Voice
+ * frontends and PDM backend links (backend0/1 use &lpass_codec +
+ * &pm8916_codec, whose board properties are kept below).
+ * Downstream: qcom,msm8x16-audio-codec internal, micbias1-ext-cap, NO
+ * external speaker amp (pb1770m deletes cdc-ext-spk-pa). Template: kiwi. */
+&lpass_codec {
+	status = "okay";
+};
+
+&pm8916_charger {
+	/* Dead on this board (external SMB358 owns USB; 0x1310 frozen).
+	 * Disabled to keep dmesg clean; indication comes from smb358. */
+	status = "disabled";
+};
+
+&venus_mem {
+	status = "okay";
+};
+
+/* Modem carve-outs, stock downstream sizes:
+ * - mpss: modem_adsp_region = 0x86800000 + 0x5600000 (86 MiB). The stock
+ *   modem ELF (firmware-lenovo-phoenix-modem) spans exactly 85 MiB
+ *   (0xc0000000..0xc54f0000), so 86 MiB is the safe minimum.
+ * - rmtfs: downstream rmtfs_sharedmem = 0x160000; the dtsi default
+ *   0xe0000 is too small for rmtfsd to serve this device's EFS files. */
+&mpss_mem {
+	reg = <0x0 0x86800000 0x0 0x5600000>;
+};
+
+&{/reserved-memory} {
+	rmtfs@86700000 {
+		reg = <0x0 0x86700000 0x0 0x160000>;
+	};
+
+	/* IOVA-space reservation (no reg = not physical memory):
+	 * venus firmware lives at IOVA 0x0-0x500000; keep the dma-iommu
+	 * allocator away so buffers pass the firmware's IsBufferProtected
+	 * check. Consumed via qcom_iommu.get_resv_regions
+	 * (power/qcom-iommu-resv-regions.patch). */
+	venus_fw_iova: venus-fw-iova {
+		iommu-addresses = <&venus_video 0x0 0x500000>;
+	};
+};
+
+&soc {
+	/* Venus video codec (same block/addr as 8916; downstream confirms
+	 * 0x1d00000 on 8939 too). 8939 has TWO video sub-cores with their own
+	 * clocks + GDSCs; they are powered with the core
+	 * (power/venus-v1-vcodec-clks.patch) and handed to HW mode at runtime
+	 * via HW_CTRL_TRIGGER (power/gcc-msm8939-venus-trigger.patch) — both
+	 * backported from the upstream MSM8939 Venus support.
+	 * Buffers must stay clear of the FW image at IOVA 0x0-0x500000
+	 * (see venus_fw_iova). */
+	venus_video: video-codec@1d00000 {
+		compatible = "qcom,msm8939-venus";
+		reg = <0x01d00000 0xff000>;
+		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&gcc VENUS_GDSC>,
+				<&gcc VENUS_CORE0_GDSC>,
+				<&gcc VENUS_CORE1_GDSC>;
+		power-domain-names = "venus", "vcodec0", "vcodec1";
+		clocks = <&gcc GCC_VENUS0_VCODEC0_CLK>,
+			 <&gcc GCC_VENUS0_AHB_CLK>,
+			 <&gcc GCC_VENUS0_AXI_CLK>,
+			 <&gcc GCC_VENUS0_CORE0_VCODEC0_CLK>,
+			 <&gcc GCC_VENUS0_CORE1_VCODEC0_CLK>;
+		clock-names = "core", "iface", "bus",
+			      "vcodec0_core", "vcodec1_core";
+		iommus = <&apps_iommu 5>;
+		memory-region = <&venus_mem>, <&venus_fw_iova>;
+		status = "okay";
+
+		video-decoder {
+			compatible = "venus-decoder";
+		};
+
+		video-encoder {
+			compatible = "venus-encoder";
+		};
+	};
+};
+
+&pm8916_codec {
+	/* downstream qcom,msm-micbias1-ext-cap */
+	qcom,micbias1-ext-cap;
+	/* micbias voltage for AMIC1/3 (handset/secondary mics on External1).
+	 * Missing -> register never programmed -> 0V bias -> mics silent
+	 * (AMIC2/headset on Internal2 still made noise, proving TX works). */
+	qcom,micbias-lvl = <2800>;
+	/* Headset jack is normally-open on this board (detection was inverted
+	 * without it: unplug read as plug). Same as kiwi. */
+	qcom,hphl-jack-type-normally-open;
+	/* MBHC button thresholds borrowed from kiwi (same PM8916 codec,
+	 * downstream has no board-specific values; verify with real presses) */
+	qcom,mbhc-vthreshold-low = <75 150 237 450 500>;
+	qcom,mbhc-vthreshold-high = <75 150 237 450 500>;
+	status = "okay";
+};
+
+&pm8916_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&pm8916_rpm_regulators {
+	pm8916_l8: l8 {
+		regulator-min-microvolt = <2950000>;
+		regulator-max-microvolt = <2950000>;
+	};
+
+	pm8916_l16: l16 {
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	pm8916_l17: l17 {
+		regulator-min-microvolt = <2850000>;
+		regulator-max-microvolt = <2850000>;
+	};
+};
+
+&pm8916_vib {
+	status = "okay";
+};
+
+&sdhc_1 {
+	status = "okay";
+};
+
+&sdhc_2 {
+	pinctrl-0 = <&sdc2_default &sdc2_cd_default>;
+	pinctrl-1 = <&sdc2_sleep &sdc2_cd_default>;
+	pinctrl-names = "default", "sleep";
+
+	cd-gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+
+	status = "okay";
+};
+
+&usb {
+	extcon = <&usb_id>, <&usb_id>;
+	/* SMB358 boost (CMD_A bit4) driven through the usb-vbus regulator
+	 * child of the charger node; the regulator_enable() call from
+	 * ci_hdrc host role is what starts OTG VBUS (5V/750mA). */
+	vbus-supply = <&usb_vbus>;
+	status = "okay";
+};
+
+&usb_hs_phy {
+	extcon = <&usb_id>;
+};
+
+&wcnss {
+	/* Enabled for future WiFi work, but wcn36xx is blacklisted
+	 * (/etc/modprobe.d/wcn36xx.conf) so the PIL never boots and the
+	 * crash loop can't wedge rtnl. See WIFI.md. */
+	status = "okay";
+};
+
+&wcnss_iris {
+	/* NOTE: was qcom,wcn3620. Lineage proves dual-band (5GHz assoc
+	 * at 433Mbps = VHT), so this must be WCN3680. Rails match 3680
+	 * exactly (vddpa 3.3V, vdddig 1.8V). 3620 mode programs the WRONG
+	 * XO (19.2 instead of 48MHz) -> RF dead -> zero-RX + watchdog. */
+	compatible = "qcom,wcn3680";
+	/* RF rails from downstream (iris-vddxo=l7, vddrfa=s3, vddpa=l9, vdddig=l5).
+	 * Without these the driver takes dummy regulators, RF stays dark and
+	 * NV download times out -> WCNSS watchdog. */
+	vddxo-supply = <&pm8916_l7>;
+	vddrfa-supply = <&pm8916_s3>;
+	vddpa-supply = <&pm8916_l9>;
+	vdddig-supply = <&pm8916_l5>;
+};
+
+&wcnss_mem {
+	status = "okay";
+};
+
+&tlmm {
+	gpio_hall_sensor_default: gpio-hall-sensor-default-state {
+		pins = "gpio117";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	gpio_keys_default: gpio-keys-default-state {
+		pins = "gpio107";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	accel_int_default: accel-int-default-state {
+		pins = "gpio112", "gpio114";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	light_int_default: light-int-default-state {
+		pins = "gpio115";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	mdss_default: mdss-default-state {
+		pins = "gpio25";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	mdss_sleep: mdss-sleep-state {
+		pins = "gpio25";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	reg_lcd_en_default: reg-lcd-en-default-state {
+		pins = "gpio97", "gpio98";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	sdc2_cd_default: sdc2-cd-default-state {
+		pins = "gpio38";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	touchscreen_default: touchscreen-default-state {
+		pins = "gpio12", "gpio13";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	usb_id_default: usb-id-default-state {
+		pins = "gpio110";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	smb_int_default: smb-int-default-state {
+		pins = "gpio62";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+};

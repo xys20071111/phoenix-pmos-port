@@ -1,0 +1,3 @@
+# Apply proven mixer defaults when the msm8916 internal audio card appears.
+# (Late probe ~41s after boot is fine: udev triggers on add, no service needed.)
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC0", RUN+="/usr/libexec/msm8916-audio-init.sh"

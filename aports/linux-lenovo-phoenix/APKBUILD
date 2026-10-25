@@ -1,0 +1,362 @@
+# Kernel config based on: arch/arm64/configs/msm8916_defconfig
+#
+# phoenix fork of device/testing/linux-postmarketos-qcom-msm8916 (2026-10): this
+# is the SAME kernel source + patch set that previously lived as local
+# modifications of the generic qcom-msm8916 kernel package, split out so the
+# upstream generic package can stay pristine. Content and pkgrel numbering
+# continue from linux-postmarketos-qcom-msm8916 pkgrel=82 (= device kernel
+# build #83); the historical notes below keep those numbers.
+maintainer="Tom Xue <xys20071111@hotmail.com>"
+_flavor="lenovo-phoenix"
+pkgname=linux-$_flavor
+pkgver=6.12.1
+# Local phoenix port (NOT upstream): adds msm8939-lenovo-phoenix.dts and
+# panel-novatek-nt35532.c. Drop these when they land in msm8916-mainline/linux.
+# r60: smb358 read-only status driver replaced by mainline CHARGER_SMB347
+# (same compatible would race); DTS gains summit,enable-usb-charging +
+# usb-vbus regulator child (OTG precursor, see repo otg/OTG.md).
+# r61: smb347-smb358-input-detect.patch — SMB358 diverges from SMB347 in
+# IRQSTAT_E (no separate input-UV IRQ latch; BIT0 *is* the live event) so
+# the cached usb_online froze at probe value; also enables the INOK
+# (input-OK) STATUS_IRQ latch so cable insertion wakes the handler, and
+# acknowledges IRQSTAT_A/B/F latches that otherwise keep the STAT pin
+# asserted (25/s re-fire loop on the device).
+# r62: charger IRQ LEVEL_LOW -> EDGE_BOTH: this board's STAT pin stays
+# asserted low at ~27/s across handler runs even with every latch
+# acknowledged (verdict: idle-level low, not a missed ack; the old
+# read-only driver ran the same line on edges for weeks without CPU
+# churn since TLMM edge trigger counts one edge for a held line).
+# r61 verified on device: online follows plug/unplug, usb_vbus
+# regulator present (regulator.22), RNDIS unaffected.
+# r62 verified on device: idle IRQ count no longer grows.
+# r63: ST2 — &usb gains vbus-supply = <&usb_vbus> (SMB358 boost drives
+# OTG VBUS through CMD_A bit4 when ci_hdrc host role enables it).
+# r63 on device: host role started (EHCI root hub) but the keyboard got
+# no VBUS, and gadget/RNDIS died on cable attach. Charging OK. Cable
+# events stopped reaching the IRQ (EDGE_BOTH count = 2 total since boot;
+# the idle-low pulsing seen at r60-r62 happens when no input present) —
+# on this board the SMB358 INOK pin appears tied such that in absence
+# of external input INOK is active, which per the driver suppresses the
+# OTG boost output ("VBUS won't be powered if INOK is active").
+# r64: enable the INOK toggle around OTG output mode: DTS gains
+# summit,needs-inok-toggle (usb-vbus child) + summit,inok-polarity = LOW
+# (upstream binding canonical pair, also fixes IRQSTAT_F latch wakeups
+# for charge detection when no cable initially).
+# r61 camera rounds: camss-vfe41-frame-based-geometry.patch — the mainline
+# VFE4.1 RDI path leaves WR_BUFFER_CFG at reset (0) for frame-based write
+# masters while the stock msm_isp40 programs it; live mid-stream reads
+# confirmed 0x00000000 on-device and frames arrive with every other 1 KiB
+# block skipped (half the bytes zero). The new optional gen1 op mirrors
+# the stock geometry calculation (8-byte groups per line | height | burst 3).
+# r62: WR_BUFFER_CFG now reads back the predicted 0x014A61F3 mid-stream yet
+# the skip pattern is unchanged (frame-row write stride is 2560 B not 2640,
+# phase drifts -80 B/row), so the op also reallocates the image unbounded
+# buffer to full stock parity (msm_isp40 single active RDI master: 2680
+# 16-byte units on msm8939, 1656 on msm8916; mainline leaves 341).
+# r63: UB 0x00000A77 reads back but the skip skeleton stays identical -
+# measured it is a strictly linear, row-structure-free 2048 B periodic
+# half-skip independent of every write master register. The remaining
+# stock hand-over the mainline driver never programs is the bus fabric
+# (msm8939-camera.dtsi): BUS_BDG QOS 0x2c4..0x2e0, DS table 0x988..0x9c8
+# and VBIF 0x30/0x34; add vfe_configure_bus_fabric() for parity (+ the
+# optional vfe0_vbif mapping hook).
+# r86 front-camera full-stock mode (ov5693-stock-24m.patch, pkgrel 80→81):
+# "plan B" for the front OV5693 after the r85 stream_regs bisect campaign on
+# kernel #81 turned out fully negative (R1 sanity reproduced the #78
+# signature; R2a-e/R3/R5/R6a-c all dead; R4a stock-PLL-5-pairs at 19.2 MHz
+# MCLK DEGRADED the link to total=1 = the stock PLL block belongs to 24 MHz
+# MCLK). Switches the whole front camera to the stock "sunny_q5v41b" module
+# state: DTS MCLK1 assigned rate 19.2 MHz → 24 MHz and endpoint
+# link-frequencies 419.2 MHz → 400 MHz (stock lane rate = 24 MHz x 0x30b3/0x30b4
+# = 24 x 100 / 3 = 800 Mbps/lane), driver XVCLK check 19.2 → 24 MHz, menu and
+# check_hwcfg to 400 MHz, FIXED_PPL 2688 → 2672 (stock HTS 0x0a70) and
+# PIXEL_RATE to the stock 159048960 (2672x1984x30, so vblank max = stock VTS
+# 0x7c0 = 1984). At every stream-on the full verbatim stock libmmcamera
+# m0 res_settings (255 entries after stripping the {0x0103,0x01} sw-reset
+# head and the {0x3001,0x0a} standby singleton; standby is released
+# explicitly after the table) is written BEFORE the ctrl/AEC handler
+# flush and stream-on, mirroring the stock daemon order and the r61-r82
+# ov13850 driver pattern. stream_regs override mechanism stays fully
+# available (it runs after the stock table by design).
+# r83 front-camera runtime register overrides (ov5693-stream-regs.patch, pkgrel 79→80):
+# diagnostic-only. Adds a module param `stream_regs` (comma separated
+# REG=VAL hex pairs) written at every stream start, after the global table and
+# mode configuration, before 0x0100=1. Empty by default = current behaviour.
+# r84 BUGFIX: apply_stream_regs returns the number of pairs written (a
+# positive count); that return value flowed into cci_write's *err accumulator,
+# so v4l2-cci skipped the SW_STREAM (0x0100=1) write and the sensor never
+# entered streaming for ANY override (observed on-device: 0x0100=0, CSID
+# counters all zero even for a no-op override like 5e00=80). Reset ret=0
+# between the override pass and the SW_STREAM cci_write (same lesson as the
+# r61 ov13850 unconditional-ret fix).
+# Purpose: bisect the remaining front-camera MIPI output problem (no RAW10
+# long packets reach CSID; 0x4307=0x31 made pixel-sized packets with an
+# unmapped generic DT appear, 0x4307=0x30 = stock value removes them) across
+# the stock register table without a rebuild per candidate.
+# r82 front-camera MIPI data-type fix (ov5693-4307-stock.patch, pkgrel 78):
+# the front OV5693 real stream was sending CSI-2 long packets with data type
+# 0x12 instead of RAW10 0x2B (decoded from CSID unmapped_hdr=0x120ca834:
+# DT=0x12, WC=0x0CA8=3240 = one 2592x10b line), so the CSID LUT (0x2B) never
+# mapped them and no frame reached VFE. Mainline's mode table wrote
+# reg 0x4307=0x31 while the stock module/tables use 0x4307=0x30 - the only
+# known sensor-config delta. This patch writes the stock value.
+# r81 front payload diagnostics (camss-front-payload-diag.patch, pkgrel 77):
+# incremental on camss-front-instrumentation.patch. Exposes the CSID data
+# plane that stock knows but never reads: total_pkts/ECC/CRC (0x90/0x94/0x98),
+# captured long/short headers (0x6C/0x70/0x74/0x78/0x7C), PIF MISR (0x80-0x8C),
+# IRQ_MASK + raw IRQ status, snapshotted at stream-on/+100ms/stream-off; plus
+# gated stock-parity A/Bs csid_irq_mask, csid_short_pkt_reset,
+# csiphy1_settle, csiphy1_rev3_quirk, ispif_stock_init (defaults unchanged).
+# Context: frame-start (RDI0 SOF) reaches VFE at 30 fps but no payload does,
+# and no CSID/ISPIF/CSIPHY programming difference vs stock remains.
+# Also in this build: pix_full_isp now defaults to 2 (B2 full ISP, true YCbCr
+# colour); set pix_full_isp=0 at runtime for the legacy demux-only path.
+# r89 front-camera ISP tuning (camss-vfe41-per-line-cal.patch, pkgrel 81→82):
+# r89 proved the front OV5693 streams through the SAME SINGLE VFE PIX line
+# with zero kernel changes (arm "msm_ispif1"->"msm_vfe0_pix" via media
+# controller; B2 hardware ISP output captured at 2592x1944 NV12, TP
+# B2_PASS + wall |U-V|=0.39 after calibration). The two sensors do need
+# different Stage-B parameters though (shared module params are
+# OV13850-tuned: WB 246/128/172 + TL84 colour matrix; OV5693 calibrates to
+# WB 260/128/163 with an identity matrix). This patch adds per-source
+# selection: at stream-on the armed media link into the PIX sink pad
+# ("msm_ispif0" rear chain vs "msm_ispif1" front chain) picks which set
+# vfe_set_wb_cfg/demosaic_interp/cc_cfg program; new runtime params
+# pix_front_wb_gain_{r,g,b} (defaults 260/128/163) and pix_front_cc_mode
+# (default 0 = identity), shared params unchanged for the rear.
+# r80 rear Stage-B full ISP (camss-vfe41-pix-full-isp.patch, pkgrel 76):
+# incremental on pix-bayer v2; programs the VFE4.1 bayer ISP chain (demosaic,
+# WB, colour correction, chroma-enhance/RGB->YUV) plus optional LINEARIZATION
+# BLC (11+36-word tables incl. DMI LUT bank0). All gated by module params and
+# OFF by default: pix_full_isp 0/1(B1)/2(B2)/3(B2+BLC), pix_linearization,
+# pix_full_isp_cfg, pix_wb_gain_r/g/b, pix_demosaic_interp, pix_cc_mode,
+# pix_cc_qfactor, pix_ce_mode. Default behaviour = previous demux-only path.
+# r77 front-camera diagnostics (camss-front-instrumentation.patch, pkgrel 75):
+# temporary, drop before upstreaming. Default behaviour unchanged; adds
+# stream-on dev_info readbacks (CSID CORE_CTRL_0/1 + CID LUT/CFG, CSIPHY1
+# lane mask/positions/settle, ISPIF INTF_INPUT_SEL/INTF_CMD_0/RDI0 CID) and
+# runtime A/B params csid_lane_assign/csid_lane_cnt/csid_core_ctrl1_lo,
+# csiphy1_lane_pos/cnt, plus ov5693 stock_mipi_regs. Reason: the front OV5693
+# real stream delivers MIPI data to CSID1 but never a frame boundary to VFE;
+# stock CSID/ISPIF programming is register-equivalent to mainline, so the
+# remaining hypotheses are the CSIPHY lane map / CSID lane config, which this
+# build makes observable and overridable without /dev/mem MMIO.
+# r76 (PIX): camss-msm8939-driver.patch now defines vfe_res_8x39 with
+# line_num = 4 (CAMSS_8x16 vfe_ops_4_1 supports the PIX line natively:
+# msm_vfe0_pix subdev + msm_vfe0_video3 NV12 node appear automatically via
+# camss_link_entities). camss-vfe41-pix-bayer.patch adds the raw-bayer
+# branches the gen1 driver never had (CORE_CFG CAMIF pixel patterns
+# 0x0-0x3 per the downstream ISP_START_PIXEL_PATTERN enum order, a demux
+# bayer branch with runtime-tunable selector/gain module params, and
+# SBGGR10_* entries in formats_pix_8x16 so the video node maps the raw
+# sink to NV12). The demux bayer selector constants are first guesses
+# (no public reference exists - the stock camera HAL programs them via
+# MSM_VFE_REG_CFG ioctls); enumerate via
+# /sys/module/qcom_camss/parameters/demux_{even,odd} without rebuilds.
+# r83 venus v9 wiring (2026-10-25, pkgrel 82->83, PENDING device test): swaps
+# in the repo's "venus v9 final shape" for venus-msm8939-res.patch +
+# venus-v1-vcodec-clks.patch (repo commit 69b09c7). Functional delta vs the
+# shape that ran r60..r82: core_clks_set_rate() now rate-programs
+# GCC_VENUS0_CORE1_VCODEC0_CLK too (the old shape filled vcodec1_clks[0] with
+# a second "vcodec0_core" entry, so the second subcore clock never got
+# set_rate and stayed at its boot rate); the enabled clock set is unchanged,
+# only the fail-unwind labels differ.
+pkgrel=83
+# When making kernel config changes, keep this fork's config self-contained:
+# there is no pmos.config PR target like the generic package had, but please
+# mirror any still-relevant change upstream when the feature is upstreamed.
+# pkgver upgrades regenerate the config from the msm8916-mainline/linux tag
+# and all local CONFIG_ changes below must be re-applied by hand!
+pkgdesc="Mainline kernel fork for the Lenovo PHAB Plus (phoenix, MSM8939)"
+arch="aarch64"
+url="https://github.com/msm8916-mainline/linux"
+license="GPL-2.0-only"
+options="
+	!check
+	!strip
+	!tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+	pmb:kconfigcheck-uefi
+"
+makedepends="
+	bison
+	clang
+	elfutils-dev
+	findutils
+	flex
+	linux-headers
+	lld
+	llvm
+	openssl-dev
+	pahole
+	perl
+	postmarketos-installkernel
+	python3
+	zstd
+"
+# NOTE: not using replaces= ("linux-postmarketos-qcom-msm8909/msm8939") like the
+# generic package — this fork must never shadow the upstream generic kernels.
+
+# Architecture
+case "$CARCH" in
+	aarch64) _carch="arm64" ;;
+esac
+
+# Source
+# NOTE: the tarball distfile keeps the upstream package name on purpose: it is
+# the exact same msm8916-mainline/linux tarball already sitting in
+# cache_distfiles, so the fork builds without re-downloading ~230 MB and the
+# checksum below stays valid.
+_tag=v${pkgver//_/-}-msm8916
+source="
+	linux-postmarketos-qcom-msm8916-v6.12.1-msm8916.tar.gz::$url/archive/$_tag.tar.gz
+	config-$_flavor.aarch64
+	0001-kbuild-Add-fno-builtin-wcslen.patch
+	smb347-smb358-input-detect.patch
+	smb347-smb358-otg-i2c-mode.patch
+	msm8939-lenovo-phoenix.dts
+	panel-novatek-nt35532.c
+	panel-novatek-nt35532.kconfig
+	qcom-pon.c
+	ov13850.c
+	ov13850.kconfig
+	pm8916-bms-vm-fake-ocv-snap.patch
+	qcom-iommu-resv-regions.patch
+	venus-msm8939-res.patch
+	venus-v1-vcodec-clks.patch
+	gcc-msm8939-venus-trigger.patch
+	gcc-msm8939-camss-mclk.patch
+	qcom-bam-dmux-register-netdevs.patch
+	camss-msm8939-driver.patch
+	msm8939-camss-dtsi.patch
+	ov5693-bringup-retry.patch
+	camss-vfe41-frame-based-geometry.patch
+	camss-vfe41-pix-bayer.patch
+	camss-front-instrumentation.patch
+	camss-vfe41-pix-full-isp.patch
+	camss-vfe41-per-line-cal.patch
+	camss-front-payload-diag.patch
+	ov5693-4307-stock.patch
+	ov5693-stream-regs.patch
+	ov5693-stock-24m.patch
+	qcom-msm8939-camss.yaml
+"
+builddir="$srcdir/linux-${_tag#v}"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/config-$_flavor.$CARCH" .config
+	# Local phoenix port (NOT upstream): install DTS + NT35532 panel driver
+	# until they land in msm8916-mainline/linux (then drop this whole block).
+	cp "$srcdir/msm8939-lenovo-phoenix.dts" arch/arm64/boot/dts/qcom/
+	grep -q "msm8939-lenovo-phoenix.dtb" arch/arm64/boot/dts/qcom/Makefile || \
+	sed -i 's|dtb-$(CONFIG_ARCH_QCOM)\t+= msm8939-longcheer-l9100.dtb|dtb-$(CONFIG_ARCH_QCOM)\t+= msm8939-lenovo-phoenix.dtb\n&|' \
+		arch/arm64/boot/dts/qcom/Makefile
+	# panel-novatek-nt35532: phoenix NT35532 (generic-write init seq from
+	# downstream qcom,mdss-dsi-on-command), not yet in the 6.12.1 tree.
+	cp "$srcdir/panel-novatek-nt35532.c" drivers/gpu/drm/panel/
+	grep -q "DRM_PANEL_NOVATEK_NT35532" drivers/gpu/drm/panel/Makefile || \
+	echo 'obj-$(CONFIG_DRM_PANEL_NOVATEK_NT35532) += panel-novatek-nt35532.o' \
+		>> drivers/gpu/drm/panel/Makefile
+	grep -q "config DRM_PANEL_NOVATEK_NT35532" drivers/gpu/drm/panel/Kconfig || \
+	cat "$srcdir/panel-novatek-nt35532.kconfig" >> drivers/gpu/drm/panel/Kconfig
+	# qcom-pon.c: upstream 6.12 + phoenix poweroff handler (programs PON
+	# shutdown type before PS_HOLD drop; without it poweroff reboots).
+	cp "$srcdir/qcom-pon.c" drivers/power/reset/qcom-pon.c
+	# ov13850.c: phoenix rear camera driver (mainline-style; ALL register
+	# tables verbatim from the stock vendor libmmcamera_ov13850.so decode
+	# — r61: 0x0103 singleton + 50 ms + 217-entry init, six per-mode
+	# tables, per-mode link freqs 300/320/600 MHz, 4-lane CSI2; not
+	# upstream). Wired like the panel driver.
+	cp "$srcdir/ov13850.c" drivers/media/i2c/
+	grep -q "CONFIG_VIDEO_OV13850" drivers/media/i2c/Makefile || \
+	echo 'obj-$(CONFIG_VIDEO_OV13850) += ov13850.o' \
+		>> drivers/media/i2c/Makefile
+	grep -q "config VIDEO_OV13850" drivers/media/i2c/Kconfig || \
+	cat "$srcdir/ov13850.kconfig" >> drivers/media/i2c/Kconfig
+	# camss-msm8939-driver.patch + msm8939-camss-dtsi.patch are applied
+	# by default_prepare above (abluild auto-applies *.patch).
+	# qcom,msm8939-camss.yaml: binding doc for the new compatible.
+	cp "$srcdir/qcom-msm8939-camss.yaml" \
+		Documentation/devicetree/bindings/media/
+	# a5xx needs its firmware in initramfs (mkinitfs picks up
+	# MODULE_FIRMWARE; a6xx already declares its own, a5xx does not).
+	grep -q 'qcom/a420_pm4.fw' drivers/gpu/drm/msm/adreno/a5xx_gpu.c || \
+	printf '%s\n' 'MODULE_FIRMWARE("qcom/a420_pm4.fw");' 'MODULE_FIRMWARE("qcom/a420_pfp.fw");' \
+		>> drivers/gpu/drm/msm/adreno/a5xx_gpu.c
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" LLVM=1 HOSTLDFLAGS="-fuse-ld=lld" \
+		KBUILD_BUILD_VERSION=$((pkgrel + 1 ))
+}
+
+package() {
+	mkdir -p "$pkgdir"/boot
+
+	_install_targets="modules_install dtbs_install"
+
+	if [ -e "$builddir/arch/$_carch/boot/vmlinuz.efi" ]; then
+		# ZBOOT EFI decompressor for EFI booting
+		install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz.efi" \
+			"$pkgdir/boot/linux.efi"
+
+		# Old GZIP'd kernel image for boot.img compatibility
+		install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz" \
+			"$pkgdir/boot/vmlinuz"
+	elif [ "$_carch" = "arm64" ]; then
+		echo "WARNING: CONFIG_ZBOOT not enabled!"
+		install -Dm644 "$builddir/arch/$_carch/boot/Image.gz" \
+			"$pkgdir/boot/vmlinuz"
+	else
+		_install_targets="zinstall modules_install dtbs_install"
+	fi
+
+	make $_install_targets \
+		ARCH="$_carch" \
+		LLVM=1 \
+		INSTALL_PATH="$pkgdir"/boot \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs
+	rm -f "$pkgdir"/usr/lib/modules/*/build "$pkgdir"/usr/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/"$_flavor"/kernel.release
+}
+
+sha512sums="
+e46fecfdab77f26c5127ddfd057d31bdf441da7fbf233cd574b396e762ea8992af65f577c595bab6761d1d339016733eb3ab652bf3a221e8b1f6bad4aa6adef5  linux-postmarketos-qcom-msm8916-v6.12.1-msm8916.tar.gz
+e8ffde1442238766daa04f29a8d19ded1a812379b02b921401d9bfa4ad31eeb3dbda6e4cf57d7c7487b6ec7c6ffd22cf4adc84029e50a2e49f9a25aa32990f6c  config-lenovo-phoenix.aarch64
+2a5c20bd9da57e42767fa70eb1aa27623e4013b5dadc3f35508e1497fb4bfd53d8775c372eea8c4d95bd12eff43f23c7a4acfb219313dcb7915643804fc73cb2  0001-kbuild-Add-fno-builtin-wcslen.patch
+8235a3857be27937ca2d1a166f4cacb0ddc56b404568e87aa01c99f03ff43a7c4d4d8f2f523bdc3a899493847da9898a7ef6988b55c5b2fb76b88377d3d86fdf  smb347-smb358-input-detect.patch
+6fe6abdc4fff567c25ac47630ae706d12a2ae6bb584e483bb462309bffd6b805d783ea62e569a7456a3eaec1b36e685f9beb858421350801358ad822cdb66ffa  smb347-smb358-otg-i2c-mode.patch
+0978c722e291bf53f11f3c37444507e8291bf6ac7d6889f522bb061fbc7aee2a22339fe0c3f185e3c0c86fd1d68761b9721368e8558e4e9ca2d5a327695b2a08  msm8939-lenovo-phoenix.dts
+2f9b3250df108e3c82a89d9bb8a31df6be479247f347000b20109bbfa807e5632964421baadce594158968973c212dd721577dc0e4d435414f7e15ca8377b431  panel-novatek-nt35532.c
+5ae2a5eac4847d3c6d94f5357edcbf1c6d5c6bc8610a89a67bf13bc89e8934e4bd21b7603311ac79e35dd4a37cfef5f30ed1dcc6a8cca5644ddb62f6a14ce2c2  panel-novatek-nt35532.kconfig
+1dee0417fad9a1a3f1964750e05704d62a394337571a92f9f0903db0530279e224c68d6cdffd4d9eeccc51f4e2269bfbcf5577e375aa747a2cb579decd2f5598  qcom-pon.c
+2aa9eec8749f15f01be59e2380048af7dc4c399709c7d9d1a8a237bda853b75b585f9cf94f172ec243176b2fb89171fcbac7a1b34a016662b2e145919ef09765  ov13850.c
+94464b44bdd4427e7c033865c07b156e063020e60fdb1194a0dd721ce445f40c9ed98649b6c396e0fe53b9a0cd13589354c9af61cfd050f1c8f40fc32492c289  ov13850.kconfig
+c08642c7113e0171c89fe2835b03b8314b7f0132dc473770004158e66dc1c627cbc1491901fc5445b05f380998935e74d2be2d8d057383407906cd833908cce8  pm8916-bms-vm-fake-ocv-snap.patch
+cd7bbbd751fe908dd66d43e2f3d94e9add086238ba1507e1927ad8d66f3777d462dbaf538979935b0a61f8f252123f0df5cab4ab91a93446d56c9c66d29e508d  qcom-iommu-resv-regions.patch
+03703dd62d2cef752b471435c47b078d8a475a57a9188320d787f5fd7b2534276734ada07d0aee418ea023f94ec4656c7da8cb25349d5809961f398fdd362b3f  venus-msm8939-res.patch
+7db6b406eab010f28fb8c48791bd2a0e8520f95aebb7978464adbca939a80862f6134e07d8df0d33eb206a37313ce2d2bec26270a860f7f38e365555278f3a1a  venus-v1-vcodec-clks.patch
+e67fcbd05cbe79c5336be7df6afda6656fbd6d6341910f560351a8957173be41976c9851aec31111e0623f3374ff889928c4740c352b36ec562088c3aa02fc44  gcc-msm8939-venus-trigger.patch
+0b1c66f595212a8fa42f4635a3d5916395880903cf57ab653cdca7132b154e818668641f992c42384e15a37c14ab8edb3df1efe572abb4c1b8467d4362c47a0b  gcc-msm8939-camss-mclk.patch
+0ce0d49e7c1ce51ffd3086d4c00c95b365ecf9a0b8af995365f525f43aa81cc540694cfa78cdc24802999974b3b9961390302919ddbabccf004609019031a413  qcom-bam-dmux-register-netdevs.patch
+00d5a4f597608104a818ba641e1aa2ed6a7c8f8851b7d7b5be8d5cb81c60b2a14d54ac1979f6c180fbdec427ed3711199a46d4d881242a360ba176d1eb76c75f  camss-msm8939-driver.patch
+cbc1cd084e50c03efad8aa307e8c98be8a6157b4640613af3f4a0ea37a2affc8361faa9b8f5232bf75d6ad676c28db903cbf39d56bd9e90e5fbcd23b2102cb05  msm8939-camss-dtsi.patch
+3051ea98695060a950c39ca58b045709c6a92a5edbe76b8f0e8e83cb24fdf6512ff9ef6ce7439a5d0ce303f35c79876950f8970b4c98a65849f4bca21e1b7d5a  ov5693-bringup-retry.patch
+f6c94a19e86df63eccc7e973d9a82e0eb9fb5afd254d2846e5934daf654080670eef3d4349ead5b1cbf2729a104eb6ceb47140b32477cf12ed17ac0e20f17d10  camss-vfe41-frame-based-geometry.patch
+1121b334b047abc11c424b4112deb87d2d91e2ea125371e9e8ba87ca666abc07ab3d896e8af1d3c791387e8c8200af59f99968d36e4a409dea0b5cccef1bd1ba  camss-vfe41-pix-bayer.patch
+0f4877a770cb95ef46050d7a83cf83f9819824ed68c282a98f53fe5148a67204b5b0fce36a694f2d3e32db845228ab801a2f4e3daa3c0411719d6ec18edecee3  camss-front-instrumentation.patch
+348d8e5db03d18995313b6d3d90a82066a633b15334138090c132e09f8614d00d30d8014d37232ce0fbbb0eb8c13a6337ed267605aba68e2d8c462e5803a6bb7  camss-vfe41-pix-full-isp.patch
+3d99c8a023d204529373b31b1ce8e8a7a19ef2a3e5b58063fc724a8bb68ab73f2b5837169967cfac9dc49ba31c7b435f24d12d56bb5e58d88b33c1bf8ce3ea42  camss-vfe41-per-line-cal.patch
+152761bf0ef8bb06d87e9c8500905d9d54ee353d62d66027769abd7a8c8e3742aa0901dc6ecc759967b632c1ffbcc045227c4741ad205d196ad917e0f5098fa8  camss-front-payload-diag.patch
+bec1d3705d75c01a0fa0e7108e79241bb5b6c33a854b2aaf1e0aee0ed5c64c7e296796daa62e3b81ed574747ddc4b7c5bb276b5086d40a1fe6032c85d1301f95  ov5693-4307-stock.patch
+16247cf15cf77c3a273e2071a5e25f7e268bba2e6ac6d49f6ea44690a9cef2a137f95b9270f35802b7cea92c46448a11de5b5bea23e5a982ce540ad7fb75c26e  ov5693-stream-regs.patch
+1d880a2982fee71f1e1cbdbcb38fbba17f7104c8a00971475254fb5308ec669012bf4ad40de1563739c855e64ef30fe39b1e5483db6768857270cb109b8e372f  ov5693-stock-24m.patch
+a0431668b14695ef043950a0c5c202ceb1693ccf881ff3463cd87c3225c725f2285ec6f448a22ae8e0ec25156ae696978280c751f4e5fb613890958e3015edb7  qcom-msm8939-camss.yaml
+"

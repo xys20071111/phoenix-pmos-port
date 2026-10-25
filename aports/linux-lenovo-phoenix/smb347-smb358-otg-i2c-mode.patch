@@ -1,0 +1,122 @@
+From 89e31a1ad6a86a7f737ed6f83b60eb75208e9bd9 Mon Sep 17 00:00:00 2001
+From: xys <xys20071111@hotmail.com>
+Subject: [PATCH] power: smb347: arm and keep the OTG-via-I2C command mode
+
+On SMB358 the OTG boost output is gated by CFG_OTHER[7:6], which
+selects the OTG control mode:
+
+  0x0 = OTG off
+  0x4 = OTG via hardware pin
+  0x8 = OTG via I2C command (CMD_A[4])
+  0xC = auto-OTG via the RID pin
+
+smb347_hw_init() clears these bits unless summit,enable-otg-charging
+is given (which arms the auto/RID mode). Boards that instead drive
+OTG VBUS through this driver's usb-vbus regulator (the CMD_A OTG bit)
+are left with the I2C command path disarmed: the chip ACKs the OTG
+bit but never starts the boost, silently - no IRQSTAT_C/D/E/F fault
+is raised and IRQSTAT_F.OTG_VALID never sets.
+
+Observed on an SMB358 (Lenovo PHAB Plus PB1-770N):
+
+  1. Arming CFG_OTHER[7:6]=0b10 makes the regulator's OTG bit
+     functional; VBUS output and peripheral enumeration work, while
+     0b00 and 0b01 do not. Stock (downstream) kernels never touch
+     this register and rely on the OTP having the I2C mode burned.
+
+  2. The chip can switch the mode bits back to a dead control mode
+     on its own, behind the driver's back: the register went from
+     0b10 to 0b01 between sessions while the driver's regmap cache
+     kept reporting the armed value (the cache masked the drift).
+     Every VBUS instance afterwards silently failed. A 2-minute
+     sample run with no plug events caught no drift, so it
+     correlates with VBUS/role events rather than time.
+
+To make the command mode survive both problems:
+
+  - arm CFG_OTHER[7:6]=0b10 in smb347_probe() right after the
+    usb-vbus regulator registers (so the arming is tied to exactly
+    "the board drives OTG VBUS through this driver");
+  - re-assert the same mode at every regulator enable, i.e. at
+    every host-role start, covering self-reset around VBUS events;
+  - mark CFG_OTHER as volatile so the regmap cache stops masking
+    hardware-mode drift and any future rmw on that register sees
+    the chip's real state.
+
+Boards using summit,enable-otg-charging keep the existing
+auto-OTG behaviour from smb347_hw_init() untouched.
+
+Signed-off-by: xys <xys20071111@hotmail.com>
+---
+diff --git a/drivers/power/supply/smb347-charger.c b/drivers/power/supply/smb347-charger.c
+index c8392933e..31db55b52 100644
+--- a/drivers/power/supply/smb347-charger.c
++++ b/drivers/power/supply/smb347-charger.c
+@@ -69,6 +69,7 @@
+ #define CFG_OTHER				0x09
+ #define CFG_OTHER_RID_MASK			0xc0
+ #define CFG_OTHER_RID_ENABLED_AUTO_OTG		0xc0
++#define CFG_OTHER_RID_ENABLED_OTG_I2C		0x80
+ #define CFG_OTG					0x0a
+ #define CFG_OTG_TEMP_THRESHOLD_MASK		0x30
+ #define CFG_OTG_CURRENT_LIMIT_250mA		BIT(2)
+@@ -1200,6 +1201,7 @@ static bool smb347_volatile_reg(struct device *dev, unsigned int reg)
+ 	case STAT_B:
+ 	case STAT_C:
+ 	case STAT_E:
++	case CFG_OTHER:
+ 		return true;
+ 	}
+ 
+@@ -1393,6 +1395,24 @@ static int smb347_usb_vbus_regulator_enable(struct regulator_dev *rdev)
+ 
+ 	smb347_charging_disable(smb);
+ 
++	/*
++	 * Re-assert the OTG-via-I2C command mode armed at probe. On this
++	 * board the chip can reset the mode bits CFG_OTHER[7:6] to a dead
++	 * control mode on its own (observed: I2C command mode drifting to
++	 * pin mode behind the driver's back while the regmap cache still
++	 * reported the armed value). VBUS output only works in command
++	 * mode, so re-arm before driving the CMD_A OTG bit.
++	 */
++	if (!smb->use_usb_otg) {
++		ret = regmap_update_bits(smb->regmap, CFG_OTHER,
++					 CFG_OTHER_RID_MASK,
++					 CFG_OTHER_RID_ENABLED_OTG_I2C);
++		if (ret < 0) {
++			dev_err(smb->dev, "failed to arm OTG I2C mode\n");
++			goto done;
++		}
++	}
++
+ 	if (device_property_read_bool(&rdev->dev, "summit,needs-inok-toggle")) {
+ 		unsigned int sysok = 0;
+ 
+@@ -1592,6 +1612,26 @@ static int smb347_probe(struct i2c_client *client)
+ 		return PTR_ERR(smb->usb_rdev);
+ 	}
+ 
++	if (!smb->use_usb_otg) {
++		/*
++		 * The board drives OTG VBUS through this driver's usb-vbus
++		 * regulator, i.e. through the CMD_A OTG bit. Arm the "OTG
++		 * via I2C command" control mode, which smb347_hw_init()
++		 * leaves cleared for this case; without it the chip
++		 * silently ignores the OTG bit and VBUS never powers up.
++		 */
++		ret = smb347_set_writable(smb, true, false);
++		if (!ret)
++			ret = regmap_update_bits(smb->regmap, CFG_OTHER,
++						 CFG_OTHER_RID_MASK,
++						 CFG_OTHER_RID_ENABLED_OTG_I2C);
++		smb347_set_writable(smb, false, false);
++		if (ret < 0) {
++			smb347_irq_disable(smb);
++			return ret;
++		}
++	}
++
+ 	return 0;
+ }
+ 

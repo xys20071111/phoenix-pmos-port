@@ -11,7 +11,7 @@
 #   fatread.py backups/modem.bin extract IMAGE/X
 #   (FAT names are uppercase; rename to lowercase after extracting)
 #
-# device-qcom-msm8916 depends on the -venus subpackage; install the
+# device-lenovo-phoenix depends on the -venus subpackage; install the
 # -modem subpackage when enabling the modem (see BOOT-STATUS.md).
 maintainer="Tom Xue <xys20071111@hotmail.com>"
 pkgname=firmware-lenovo-phoenix

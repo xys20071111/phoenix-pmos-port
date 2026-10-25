@@ -1,0 +1,25 @@
+--- a/drivers/media/i2c/ov5693.c	2026-10-17 12:55:03.464533798 +0800
++++ b/drivers/media/i2c/ov5693.c	2026-10-17 12:55:03.512968792 +0800
+@@ -736,8 +736,21 @@
+ {
+ 	int ret;
+ 	u64 id;
++	unsigned int i;
+ 
+-	ret = cci_read(ov5693->regmap, OV5693_REG_CHIP_ID, &id, NULL);
++	/*
++	 * BRING-UP ONLY (Lenovo PHAB Plus camera port, remove when the
++	 * camera pipeline passes verification): keep retrying the
++	 * chip-ID read for ~2.5 s so the power-up window stays long
++	 * enough for full i2cdetect sweeps from userspace while the
++	 * sensor is held awake (races: earlier window was only ~7.5 ms).
++	 */
++	for (i = 0; i < 25; i++) {
++		ret = cci_read(ov5693->regmap, OV5693_REG_CHIP_ID, &id, NULL);
++		if (!ret)
++			break;
++		usleep_range(100000, 120000);
++	}
+ 	if (ret)
+ 		return ret;
+ 

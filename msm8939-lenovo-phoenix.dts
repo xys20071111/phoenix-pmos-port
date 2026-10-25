@@ -322,8 +322,12 @@
 	 * (r52): chip-id 0x5690 read from 0x10 over the shared CCI bus
 	 * while the ov5693 driver held this module awake (polarity, rails
 	 * and 19.2 MHz MCLK all exercised as configured).
-	 * Upstream ov5693.c mode tables assume 19.2 MHz MCLK (stock ran
-	 * 24 MHz) and 419.2 MHz link-freq. */
+	 * r86-F full-stock switch (kernel #82): this module's stock lib ran
+	 * 24 MHz MCLK and a 2-lane 800 Mbps/lane MIPI link (PLL div/mult
+	 * regs 0x30b4/0x30b3 baked in the r86-F driver table -> link-freq
+	 * 400 MHz DDR).  Upstream's 19.2 MHz/419.2 MHz choice produced
+	 * frames-loss "total=3/5" counters on every bisect candidate, the
+	 * stock 24 MHz m0 table is the fallback (CAMERA.md r78-r85). */
 	ov5693: camera@10 {
 		compatible = "ovti,ov5693";
 		reg = <0x10>;
@@ -334,7 +338,7 @@
 		clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
 		clock-names = "xvclk";
 		assigned-clocks = <&gcc GCC_CAMSS_MCLK1_CLK>;
-		assigned-clock-rates = <19200000>;
+		assigned-clock-rates = <24000000>;
 
 		avdd-supply = <&pm8916_l17>;	/* cam_vana 2.85V */
 		dvdd-supply = <&pm8916_l2>;	/* cam_vdig 1.20V */
@@ -348,7 +352,7 @@
 
 		port {
 			ov5693_ep: endpoint {
-				link-frequencies = /bits/ 64 <419200000>;
+				link-frequencies = /bits/ 64 <400000000>;
 				data-lanes = <1 2>;
 				remote-endpoint = <&csiphy1_ep>;
 			};

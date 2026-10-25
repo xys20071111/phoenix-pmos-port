@@ -1,0 +1,9 @@
+config DRM_PANEL_NOVATEK_NT35532
+	tristate "Novatek NT35532-based DSI video mode panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_KMS_HELPER
+	help
+	  Say Y or M here if you want to enable support for Novatek
+	  NT35532-based 1080p video mode DSI panels.

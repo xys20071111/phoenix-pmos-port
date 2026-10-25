@@ -1,0 +1,45 @@
+# Mark Venus core GDSCs hardware-triggered (= downstream "qcom,supports-hw-trigger")
+# on msm8939 (backport of upstream MSM8939 Venus support v8/v9,
+# "clk: qcom: gcc-msm8939: mark Venus core GDSCs as hardware controlled").
+#
+# HW_CTRL_TRIGGER (not HW_CTRL): the driver powers the cores up, then hands
+# control to the firmware via dev_pm_genpd_set_hwmode(). The two vcodec-core
+# branch clocks get an explicit .halt_check = BRANCH_HALT (zero/default in this
+# tree, pinned to match upstream); if probe fails with -EBUSY on these lines
+# ("stuck clock"), fall back to BRANCH_HALT_SKIP per v8 and the msm8953
+# precedent cdc59600bccf.
+
+--- a/drivers/clk/qcom/gcc-msm8939.c
++++ b/drivers/clk/qcom/gcc-msm8939.c
+@@ -3664,6 +3664,7 @@
+ 
+ static struct clk_branch gcc_venus0_core0_vcodec0_clk = {
+ 	.halt_reg = 0x4c02c,
++	.halt_check = BRANCH_HALT,
+ 	.clkr = {
+ 		.enable_reg = 0x4c02c,
+ 		.enable_mask = BIT(0),
+@@ -3681,6 +3682,7 @@
+ 
+ static struct clk_branch gcc_venus0_core1_vcodec0_clk = {
+ 	.halt_reg = 0x4c034,
++	.halt_check = BRANCH_HALT,
+ 	.clkr = {
+ 		.enable_reg = 0x4c034,
+ 		.enable_mask = BIT(0),
+@@ -3753,6 +3755,7 @@
+ 	.pd = {
+ 		.name = "venus_core0",
+ 	},
++	.flags = HW_CTRL_TRIGGER,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
+@@ -3761,6 +3764,7 @@
+ 	.pd = {
+ 		.name = "venus_core1",
+ 	},
++	.flags = HW_CTRL_TRIGGER,
+ 	.pwrsts = PWRSTS_OFF_ON,
+ };
+ 
