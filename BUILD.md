@@ -75,7 +75,7 @@ none of these rows apply to it anymore.
 | `power/smb358-status.c` + `.kconfig` | **wired out (r60, 2026-10-18)**: superseded by upstream `CONFIG_CHARGER_SMB347=m`, which matches the same `summit,smb358` node (two drivers must not race); charging indication now comes from the `smb347-usb` power supply. Reason + plan: `otg/OTG.md`. r60 alone froze `online` at the probe value — see next row |
 | `power/smb347-smb358-input-detect.patch` | `source=` + sha (auto-applied, r61): the upstream driver assumes SMB347's IRQSTAT_E layout (input-UV STAT BIT0 **+ separate IRQ latch BIT1**); SMB358 has no separate latch bit, so the cached `usb_online` never refreshed and `online` froze at the probe value. Patch: derive the input state from live IRQSTAT_E BIT0 on every IRQ pass, enable the INOK (input-OK) STATUS_IRQ latch `CFG_STATUS_IRQ BIT2` so *inserting* the cable raises an event, and acknowledge IRQSTAT_A/B/F latches that would otherwise keep the STAT pin asserted (25/s re-fire loop observed on this board). Divergence details + bit map: `otg/OTG.md` |
 | `power/smb347-smb358-otg-i2c-mode.patch` | `source=` + sha (auto-applied, r66): mainline `hw_init` clears `CFG_OTHER[7:6]` (OTG control mode) unless `summit,enable-otg-charging` is set — erasing the OTP-burned "OTG via I2C command" (0x80) mode, after which the `usb-vbus` regulator's CMD_A OTG bit is ACKed but silently produces no boost. The patch arms 0x80 in `smb347_probe()` right after the `usb-vbus` regulator registers (so the arming is tied to exactly "the board drives OTG VBUS through this driver"); auto-OTG semantics unchanged. Proven live by wire-write experiment: 0x80 enumerated a Stadia controller from the phone; 0x4?/0x00 never powered VBUS. `otg/OTG.md` |
-| `power/pm8916-bms-vm-fake-ocv-snap.patch` | `source=` + sha; applied automatically by `default_prepare` (ab/BUILD auto-applies `*.patch`) |
+| `power/pm8916-bms-vm-ocv-observer.patch` | `source=` + sha; applied automatically by `default_prepare` (ab/BUILD auto-applies `*.patch`) |
 | `power/qcom-iommu-resv-regions.patch` | same (adds `get_resv_regions` to qcom_iommu) |
 | `power/venus-msm8939-res.patch` | same (msm8939 venus resources: dual-core clocks/domains, no `cp_*`) |
 | `power/venus-v1-vcodec-clks.patch` | same (core power + clock sequencing on the 1xx path, backported from upstream) |
@@ -433,3 +433,57 @@ venus 是模块（`CONFIG_VIDEO_QCOM_VENUS=m`），模块级变更 sideload+重�
 - 若日后再回退：pmaports 两补丁恢复 `630e3a7` 版 + `pmbootstrap
   checksum` + pkgrel 再 bump，aports 镜像重新同步。
 
+
+## 14. 电池 OCV/IR 观察器（2026-10-26，待上机）
+
+现象与根因见 `BOOT-STATUS.md`「电池 OCV/IR 观察器重写」一节：
+VM-BMS 只有端电压，旧逻辑把 `vbat - 100mV` 当 OCV 直接查表，负载阶跃
+（含拔电 4.35V 浮充 -> OCV）会让百分比几秒内掉几十点，静置又弹回。
+
+- 驱动：`power/pm8916-bms-vm-ocv-observer.patch` 取代
+  `power/pm8916-bms-vm-fake-ocv-snap.patch`。核心是
+  `I_est = (OCV - VBAT) / Rbatt` 后把电流积分成 OCV 位移；负载阶跃只改
+  瞬时电流，不再瞬时改 OCV/容量。另含 FIFO 两样本平均 + 2s EMA 上报
+  真实端电压（去掉 -100mV）、容量 0.05%/s 限速（大偏差 0.2%/s）、
+  resume 用 S3 OCV 重锚、probe 移到 psy/info 就绪后再申请 IRQ。
+- DTS：`battery` 节点新增
+  `factory-internal-resistance-micro-ohms = <126000>`（下游
+  `qcom,default-rbatt-mohm = <126>`），作为观察器的 Rbatt。
+- 接线：pmaports `device/testing/linux-lenovo-phoenix/` 已换入新补丁、
+  删除旧补丁、同步 DTS/APKBUILD，`pkgrel 83->84`；`pmbootstrap checksum`
+  重算、`apkbuild_parse` 通过；repo `aports/` 镜像与 pmaports `diff -rq`
+  一致。
+- 离线验证：6.12.1-msm8916 树 `drivers/power/supply/pm8916_bms_vm.o`
+  单编通过（aarch64 交叉 gcc），`msm8939-lenovo-phoenix.dtb` 编译通过，
+  补丁 `patch -p1` dry-run 通过。
+- 上机步骤：`pmbootstrap build linux-lenovo-phoenix` +
+  `pmbootstrap sideload linux-lenovo-phoenix`，重启。验证点：拔电、
+  大负载、静置时百分比连续（允许缓慢滑动，不允许秒降/回跳）；
+  低电量在 1~2% 附近关机。
+- r85 开机锚点修正（2026-10-27，pkgrel 84->85，待上机）：本机常几天不
+  suspend，S3 OCV 寄存器可能是上次（甚至充电浮充时）的旧值，导致每次
+  reboot 都从 100% 起步。probe 不再使用 S3；第一条 FIFO 用端电压 +
+  IR 余量（放电 +150mV / 充电 -100mV）起步，前 60s 用最高端电压 +30mV
+  向上修正。suspend 仅在未充电时强制 S3；resume 只有确实测过 S3 才重锚。
+  补丁 `power/pm8916-bms-vm-ocv-observer.patch` 已更新，sha 已手工同步
+  （`pmbootstrap checksum` 因当前环境 sudo 不可用未跑，APKBUILD 内 sha
+  与文件逐一核对一致）。
+- r86 充电电流（2026-10-27，pkgrel 85->86，待上机）：battery 节点补上下游
+  快充配置 `constant-charge-current-max-microamp = <1800000>`（下游
+  `fastchg-current-max-ma = 1800`）和 `charge-term-current-microamp =
+  <100000>`（`iterm-ma = 100`）。此前 smb347 对缺省项不写寄存器，SMB358
+  跑 OTP 默认值，充电偏慢；旧电量算法又会在 CV 段快速跳 100，掩盖了真实
+  速度。BMS 开机充电的 IR 余量也改为按该 FCC 计算（1.8A*126mOhm≈227mV），
+  不再固定 100mV。验证：充电时 `smb347-usb/constant_charge_current` 应约
+  1800000µA，10 分钟涨幅约 8~9 点。
+- r87 VBAT 偏移 + 满电开机锚点（2026-10-28，pkgrel 86->87，待上机）：满电
+  `voltage_now` 读到 4.448V（SMB358 硬件浮充 4.34V），证明 VM-BMS 原始值高
+  ~100mV；原 fork 的 `-100mV` 是校准偏移。FIFO 与 S3 OCV 路径都恢复该偏移。
+  另外 r86 在 EOC 后仍按 1.8A 减 227mV IR，锚出 87%；现在只有 charger
+  `STATUS==CHARGING` 才减，FULL/NOT_CHARGING 不减。满电重启应为 100，拔线
+  不再跳到 94。
+- r88 对齐 TWRP（2026-10-28，pkgrel 87->88，待上机）：读写 PMIC 持久化的
+  `BMS_SOC_REG`/`BMS_OCV_REG`（B0/B1，Android 与 TWRP 同款）：probe 读取上次
+  OCV/SoC，运行中每 10s 刷新；TWRP 的 97% = 存储的 OCV 4.28V。寄存器无效或与
+  端电压差 >600mV 才回退到 S3 OCV（±400mV），最后才是端电压 + IR。回退充电时
+  只有 `vbat+20mV < float`（明显在 CC）才减 `FCC*Rbatt`。

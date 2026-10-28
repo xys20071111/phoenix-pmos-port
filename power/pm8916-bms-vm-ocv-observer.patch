@@ -1,0 +1,714 @@
+--- a/drivers/power/supply/pm8916_bms_vm.c
++++ b/drivers/power/supply/pm8916_bms_vm.c
+@@ -14,6 +14,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/timekeeping.h>
+ #include <linux/mod_devicetable.h>
++#include <linux/math64.h>
++#include <linux/minmax.h>
+ 
+ #define PM8916_PERPH_TYPE 0x04
+ #define PM8916_BMS_VM_TYPE 0x020D
+@@ -37,6 +39,15 @@
+ #define PM8916_BMS_VM_S2_SAMPLE_INTERVAL_CTL 0x56
+ #define PM8916_BMS_VM_S3_S7_OCV_DATA0 0x6A
+ #define PM8916_BMS_VM_BMS_FIFO_REG_0_LSB 0xC0
++/*
++ * PMIC-backed "shutdown OCV/SoC" registers, written by Android/TWRP
++ * (qpnp-vm-bms backup_ocv_soc) and preserved across reboots/power-off.
++ * B0: (soc + 1) << 1, B1..B2: OCV in mV.
++ */
++#define PM8916_BMS_VM_SOC_BACKUP_REG 0xB0
++#define PM8916_BMS_VM_OCV_BACKUP_REG 0xB1
++#define PM8916_BMS_VM_SOC_BACKUP_MASK 0xFE
++#define PM8916_BMS_VM_BACKUP_INTERVAL_NS (10 * NSEC_PER_SEC)
+ 
+ /* Using only 1 fifo is broken in hardware */
+ #define PM8916_BMS_VM_FIFO_COUNT 2 /* 2 .. 8 */
+@@ -44,6 +55,52 @@
+ #define PM8916_BMS_VM_S1_SAMPLE_INTERVAL 10
+ #define PM8916_BMS_VM_S2_SAMPLE_INTERVAL 10
+ 
++/*
++ * The VM-BMS block only samples the battery voltage. It provides neither
++ * the current nor a running OCV measurement, so the charge counter has to
++ * be estimated in software. Instead of feeding the loaded terminal voltage
++ * to the OCV table (which makes the capacity collapse as soon as a load is
++ * applied) use a small voltage/IR observer, see pm8916_bms_vm_update_ocv().
++ */
++#define PM8916_BMS_VM_VBAT_TAU_MS 2000
++#define PM8916_BMS_VM_DEFAULT_RBATT_UOHM 126000
++#define PM8916_BMS_VM_DEFAULT_CAPACITY_UAH 3500000
++#define PM8916_BMS_VM_DEFAULT_VMAX_UV 4350000
++#define PM8916_BMS_VM_DEFAULT_VMIN_UV 3400000
++/* The OCV estimate may go slightly below the design minimum so 0% is reachable */
++#define PM8916_BMS_VM_OCV_MIN_UV 3000000
++/* Longest interval to integrate over (protects against IRQ storms) */
++#define PM8916_BMS_VM_MAX_DT_MS 5000
++
++/* Plausible terminal voltage window (rejects empty/garbage FIFO reads) */
++#define PM8916_BMS_VM_VBAT_MIN_UV 2500000
++#define PM8916_BMS_VM_VBAT_MAX_UV 4600000
++/*
++ * The VM-BMS VBAT channel reads ~100mV high on this board: at the SMB358
++ * float (4.34V hardware setting) the raw FIFO average is ~4.448V. The
++ * downstream VADC applies a per-device calibration that this driver does
++ * not have, so use the board-measured fixed offset.
++ */
++#define PM8916_BMS_VM_VBAT_OFFSET_UV 100000
++/*
++ * At boot the S3 OCV is not trustworthy (the phone can run for days
++ * without suspending, and a suspend while charging stores the float
++ * voltage), so start from the terminal voltage with a typical IR drop.
++ */
++#define PM8916_BMS_VM_BOOT_IR_UV 150000
++/* Window in which the highest terminal voltage refines the boot OCV */
++#define PM8916_BMS_VM_BOOT_REFINE_MS 60000
++#define PM8916_BMS_VM_BOOT_REFINE_MARGIN_UV 30000
++
++/*
++ * Limit how fast the reported capacity may move, in micro-percent per
++ * second. 0.05 %/s means that even a completely wrong estimate is
++ * corrected over minutes instead of jumping in front of the user.
++ */
++#define PM8916_BMS_VM_CAP_SLEW_UPCT_PER_S 50000
++#define PM8916_BMS_VM_CAP_CATCHUP_UPCT_PER_S 200000
++#define PM8916_BMS_VM_CAP_CATCHUP_THRESHOLD_UPCT (10LL * 1000000)
++
+ struct pm8916_bms_vm_battery {
+ 	struct device *dev;
+ 	struct power_supply *battery;
+@@ -51,11 +108,198 @@
+ 	struct regmap *regmap;
+ 	unsigned int reg;
+ 	unsigned int last_ocv;
+-	time64_t last_ocv_time;
+-	unsigned int vbat_now;
+-	unsigned int fake_ocv;
++	unsigned int vbat_now;		/* filtered terminal voltage, uV */
++	unsigned int ocv_now;		/* estimated OCV, uV */
++	unsigned int rbatt_uohm;
++	unsigned int capacity_uah;
++	u64 last_update_ns;
++	u64 boot_until_ns;
++	u64 last_backup_ns;
++	unsigned int boot_vmax;
++	unsigned int stored_ocv;
++	int stored_cap;
++	s64 reported_cap_upct;		/* reported capacity, micro-percent */
++	bool vbat_valid;
++	bool ocv_valid;
++	bool boot_charging;
++	bool s3_forced;
++	bool stored_valid;
++	bool backup_failed;
+ };
+ 
++static bool pm8916_bms_vm_valid_ocv(unsigned int ocv)
++{
++	return ocv >= 2500000 && ocv <= 4600000;
++}
++
++/*
++ * Return the local slope of the OCV table in uV per percent. This is used
++ * to convert a charge delta into an OCV delta.
++ */
++static int pm8916_bms_vm_ocv_slope(struct pm8916_bms_vm_battery *bat,
++				   unsigned int ocv)
++{
++	struct power_supply_battery_ocv_table *table;
++	int i, len, idx = -1;
++	int docv, dcap;
++
++	table = power_supply_find_ocv2cap_table(bat->info, 25, &len);
++	if (!table || len < 2)
++		return 0;
++
++	for (i = 0; i < len - 1; i++) {
++		if (ocv <= table[i].ocv && ocv >= table[i + 1].ocv) {
++			idx = i;
++			break;
++		}
++	}
++
++	if (idx < 0)
++		idx = ocv > table[0].ocv ? 0 : len - 2;
++
++	docv = table[idx].ocv - table[idx + 1].ocv;
++	dcap = table[idx].capacity - table[idx + 1].capacity;
++	if (docv <= 0 || dcap <= 0)
++		return 10000;
++
++	return max_t(int, docv / dcap, 500);
++}
++
++static void pm8916_bms_vm_update_vbat(struct pm8916_bms_vm_battery *bat,
++				      unsigned int vbat_uv, s64 dt_ms)
++{
++	if (!bat->vbat_valid) {
++		bat->vbat_now = vbat_uv;
++		bat->vbat_valid = true;
++		return;
++	}
++
++	bat->vbat_now += div_s64(((s64)vbat_uv - (s64)bat->vbat_now) * dt_ms,
++				 (s32)(PM8916_BMS_VM_VBAT_TAU_MS + dt_ms));
++}
++
++/*
++ * Estimate the open circuit voltage from the terminal voltage.
++ *
++ * The battery current is approximated with I = (OCV - VBAT) / Rbatt, i.e.
++ * the voltage dropped over the (known) internal resistance. That current is
++ * then integrated into the OCV, moving it along the OCV table. This has two
++ * important properties compared to simply using VBAT:
++ *
++ *  - a load step only changes I for as long as the load lasts, it does not
++ *    move the OCV (and therefore the capacity) instantly;
++ *  - when the load is removed VBAT rises towards the OCV and I goes to zero,
++ *    so the capacity does not jump back up either.
++ *
++ * The observer converges towards the real OCV with a time constant of
++ * Rbatt * Q / (dOCV/dSoC), which is roughly half an hour for this battery.
++ * Rbatt only scales that time constant; it does not change the equilibrium.
++ * While a load is sustained the equilibrium is the loaded voltage, so a
++ * plausible Rbatt still matters, but a load step or a rest no longer
++ * produces a capacity jump.
++ */
++static void pm8916_bms_vm_update_ocv(struct pm8916_bms_vm_battery *bat,
++				     s64 dt_ms)
++{
++	s64 ir_uv, docv_uv, new_ocv;
++	int slope;
++
++	ir_uv = (s64)bat->ocv_now - (s64)bat->vbat_now;
++
++	slope = pm8916_bms_vm_ocv_slope(bat, bat->ocv_now);
++	if (!slope)
++		return;
++
++	/*
++	 * ir in uV, Rbatt in uOhm -> current in A. Integrating:
++	 *
++	 *   dOCV[uV] = (ir[uV] / Rbatt[uOhm]) * dt[ms] / (Q[uAh] * 3600 * 1000)
++	 *              * 100 * slope[uV/%]
++	 *            = ir * dt * slope * 250 / (9 * Rbatt * Q)
++	 */
++	docv_uv = (s64)ir_uv * dt_ms * 250 * slope;
++	docv_uv = div64_s64(docv_uv,
++			    (s64)9 * bat->rbatt_uohm * bat->capacity_uah);
++
++	new_ocv = (s64)bat->ocv_now - docv_uv;
++	new_ocv = clamp(new_ocv, (s64)PM8916_BMS_VM_OCV_MIN_UV,
++			(s64)bat->info->voltage_max_design_uv);
++	bat->ocv_now = new_ocv;
++}
++
++/*
++ * The capacity is derived from the OCV estimate. Slew limit the reported
++ * value so that nothing the observer does can produce a visible jump.
++ */
++static void pm8916_bms_vm_update_capacity(struct pm8916_bms_vm_battery *bat,
++					  s64 dt_ms)
++{
++	s64 raw_upct, diff, adiff, step;
++	int raw;
++
++	raw = power_supply_batinfo_ocv2cap(bat->info, bat->ocv_now, 25);
++	if (raw < 0)
++		return;
++
++	raw = clamp(raw, 0, 100);
++	raw_upct = (s64)raw * 1000000;
++
++	if (bat->reported_cap_upct < 0) {
++		bat->reported_cap_upct = raw_upct;
++		return;
++	}
++
++	diff = raw_upct - bat->reported_cap_upct;
++	adiff = diff < 0 ? -diff : diff;
++
++	if (adiff > PM8916_BMS_VM_CAP_CATCHUP_THRESHOLD_UPCT)
++		step = dt_ms * PM8916_BMS_VM_CAP_CATCHUP_UPCT_PER_S / 1000;
++	else
++		step = dt_ms * PM8916_BMS_VM_CAP_SLEW_UPCT_PER_S / 1000;
++	if (step < 1)
++		step = 1;
++
++	diff = clamp(diff, -step, step);
++	bat->reported_cap_upct += diff;
++	bat->reported_cap_upct = clamp(bat->reported_cap_upct,
++				       0, 100LL * 1000000);
++}
++
++/*
++ * The PMIC preserves OCV/SoC in two registers across reboots (Android/TWRP
++ * use the same ones). Refresh them every few seconds so the next boot -
++ * including a reboot into recovery - starts from our latest value.
++ */
++static void pm8916_bms_vm_backup(struct pm8916_bms_vm_battery *bat, u64 now_ns)
++{
++	u16 ocv_mv;
++	int cap, ret;
++
++	if (bat->backup_failed || !bat->ocv_valid || bat->reported_cap_upct < 0)
++		return;
++	if (now_ns - bat->last_backup_ns < PM8916_BMS_VM_BACKUP_INTERVAL_NS)
++		return;
++
++	ocv_mv = (u16)clamp(bat->ocv_now / 1000, 2500, 4600);
++	cap = clamp(div_s64(bat->reported_cap_upct, 1000000), 0, 100);
++
++	ret = regmap_bulk_write(bat->regmap,
++				bat->reg + PM8916_BMS_VM_OCV_BACKUP_REG,
++				&ocv_mv, 2);
++	if (!ret)
++		ret = regmap_update_bits(bat->regmap,
++					 bat->reg + PM8916_BMS_VM_SOC_BACKUP_REG,
++					 PM8916_BMS_VM_SOC_BACKUP_MASK,
++					 (cap + 1) << 1);
++	if (ret) {
++		dev_warn(bat->dev, "Failed to store OCV/SOC backup: %d\n", ret);
++		bat->backup_failed = true;
++		return;
++	}
++
++	bat->last_backup_ns = now_ns;
++}
++
+ static int pm8916_bms_vm_battery_get_property(struct power_supply *psy,
+ 					      enum power_supply_property psp,
+ 					      union power_supply_propval *val)
+@@ -79,14 +323,18 @@
+ 	case POWER_SUPPLY_PROP_HEALTH:
+ 		if (bat->vbat_now < info->voltage_min_design_uv)
+ 			val->intval = POWER_SUPPLY_HEALTH_DEAD;
+-		else if (bat->vbat_now > info->voltage_max_design_uv)
++		else if (bat->vbat_now > info->voltage_max_design_uv + 25000)
++			/* Allow for CV float and ADC noise at full charge */
+ 			val->intval = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+ 		else
+ 			val->intval = POWER_SUPPLY_HEALTH_GOOD;
+ 		return 0;
+ 
+ 	case POWER_SUPPLY_PROP_CAPACITY:
+-		val->intval = power_supply_batinfo_ocv2cap(info, bat->fake_ocv, 20);
++		if (bat->reported_cap_upct < 0)
++			return -ENODATA;
++		val->intval = div_s64(bat->reported_cap_upct, 1000000);
++		val->intval = clamp(val->intval, 0, 100);
+ 		return 0;
+ 
+ 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+@@ -95,13 +343,11 @@
+ 
+ 	case POWER_SUPPLY_PROP_VOLTAGE_OCV:
+ 		/*
+-		 * Hardware only reliably measures OCV when the system is off or suspended.
+-		 * We expose the last known OCV value on boot, invalidating it after 180 seconds.
++		 * Hardware only reliably measures OCV when the system is off
++		 * or suspended. While running this is the observer estimate,
++		 * re-anchored to the hardware value on every resume.
+ 		 */
+-		if (ktime_get_seconds() - bat->last_ocv_time > 180)
+-			return -ENODATA;
+-
+-		val->intval = bat->last_ocv;
++		val->intval = bat->ocv_now;
+ 		return 0;
+ 
+ 	default:
+@@ -117,74 +363,165 @@
+ 	POWER_SUPPLY_PROP_CAPACITY,
+ };
+ 
++/*
++ * Only in an active charge the terminal is above the OCV by I*Rbatt, but near
++ * the float voltage the charge current has tapered to (almost) zero. There is
++ * no current ADC, so use the fast-charge current from the battery profile
++ * while the terminal is well below the float, and zero IR margin otherwise.
++ */
+ static irqreturn_t pm8916_bms_vm_fifo_update_done_irq(int irq, void *data)
+ {
+ 	struct pm8916_bms_vm_battery *bat = data;
+-	struct power_supply_battery_info *info = bat->info;
+ 	u16 vbat_data[PM8916_BMS_VM_FIFO_COUNT];
+-	int i, ret, delta = 0, loc_delta;
+-	unsigned int tmp = 0;
+-	int supplied;
++	u64 now_ns, dt_ms;
++	unsigned int vbat_uv = 0, tmp = 0;
++	int i, ret, raw;
++	bool changed = false;
+ 
+ 	ret = regmap_bulk_read(bat->regmap, bat->reg + PM8916_BMS_VM_BMS_FIFO_REG_0_LSB,
+ 			       &vbat_data, PM8916_BMS_VM_FIFO_COUNT * 2);
+ 	if (ret)
+-		return IRQ_HANDLED;
++		goto ack;
+ 
+-	/* We assume that we don't charge if no charger is present */
+-	supplied = power_supply_am_i_supplied(bat->battery);
+-	if (supplied == -ENODEV)
+-		supplied = 0;
+-	else if (supplied < 0)
+-		return IRQ_HANDLED;
+-
+-	for (i = 0; i < PM8916_BMS_VM_FIFO_COUNT; i++) {
+-		tmp = vbat_data[i] * 300 - 100000;
+-
+-		loc_delta = tmp - bat->vbat_now;
+-		delta += loc_delta;
+-		bat->vbat_now = tmp;
+-	}
++	for (i = 0; i < PM8916_BMS_VM_FIFO_COUNT; i++)
++		vbat_uv += vbat_data[i] * 300;
++	vbat_uv /= PM8916_BMS_VM_FIFO_COUNT;
++
++	if (vbat_uv < PM8916_BMS_VM_VBAT_OFFSET_UV)
++		goto ack;
++	vbat_uv -= PM8916_BMS_VM_VBAT_OFFSET_UV;
++
++	if (vbat_uv < PM8916_BMS_VM_VBAT_MIN_UV ||
++	    vbat_uv > PM8916_BMS_VM_VBAT_MAX_UV)
++		goto ack;
++
++	now_ns = ktime_get_ns();
++	dt_ms = (now_ns - bat->last_update_ns) / NSEC_PER_MSEC;
++	bat->last_update_ns = now_ns;
++	dt_ms = clamp(dt_ms, 1LL, (s64)PM8916_BMS_VM_MAX_DT_MS);
++
++	pm8916_bms_vm_update_vbat(bat, vbat_uv, dt_ms);
+ 
+ 	/*
+-	 * The VM-BMS hardware only collects voltage data and the software
+-	 * has to process it to calculate the OCV and SoC. Hardware provides
+-	 * up to 8 averaged measurements for software to take in account.
+-	 *
+-	 * NOTE: Since VM-BMS is mostly implemented in software, OCV needs to be estimated.
+-	 * This driver makes some assumptions to estimate OCV from averaged VBAT measurements
+-	 * and initial OCV measurements taken on boot or while in suspend:
+-	 *
+-	 *  - When charger is online, ocv can only increase.
+-	 *  - When charger is offline, ocv can only decrease and ocv > vbat.
+-	 *  - ocv can't change more than 0.025v between the measurements.
+-	 *  - When charger is in CV mode (vbat = const vbat-max), ocv increases by
+-	 *    0.004v every measurement until it reaches vbat.
+-	 *
+-	 * Those assumptions give somewhat realistic estimation of ocv and capacity, though
+-	 * in some worst case scenarios it will perform poorly.
+-	 * Ideally proper BMS algorithm should be implemented in userspace.
++	 * Boot anchor, in order of preference:
++	 *  1. PMIC-backed shutdown OCV/SoC (shared with Android/TWRP, and
++	 *     refreshed by us every few seconds while running).
++	 *  2. The S3/PON OCV, if it is consistent with the terminal.
++	 *  3. Terminal voltage + a typical IR drop.
+ 	 */
++	if (!bat->ocv_valid) {
++		int supplied = power_supply_am_i_supplied(bat->battery);
++		s64 s3 = (s64)bat->last_ocv;
++		bool s3_valid = pm8916_bms_vm_valid_ocv(bat->last_ocv);
++		bool s3_ok = false;
++		bool used_stored = false;
++
++		bat->boot_charging = supplied > 0;
++
++		if (bat->stored_valid) {
++			s64 d = (s64)bat->stored_ocv - (s64)bat->vbat_now;
++
++			/*
++			 * The stored value is from the last session. Only
++			 * reject it if the battery clearly changed while the
++			 * device was off.
++			 */
++			if (d >= -600000 && d <= 600000) {
++				bat->ocv_now = bat->stored_ocv;
++				bat->boot_charging = d < 0;
++				used_stored = true;
++			}
++		}
++
++		if (!used_stored && s3_valid) {
++			s64 d = s3 - (s64)bat->vbat_now;
++
++			/*
++			 * Accept the S3 OCV when it is within any plausible
++			 * IR drop of VBAT. Its sign also gives the real
++			 * current direction (not the same as "cable online"
++			 * after EOC).
++			 */
++			s3_ok = d >= -400000 && d <= 400000;
++			bat->boot_charging = s3_ok ? d < 0 : supplied > 0;
++			if (s3_ok)
++				bat->ocv_now = bat->last_ocv;
++		}
++
++		if (!used_stored && !s3_ok) {
++			if (bat->boot_charging) {
++				u32 margin = 0;
++				u32 vfloat = bat->info->constant_charge_voltage_max_uv;
++
++				if (vfloat <= 0)
++					vfloat = bat->info->voltage_max_design_uv;
++
++				/*
++				 * Well below the float the charger is in CC:
++				 * IR ~= FCC * Rbatt. Near the float the
++				 * current has tapered, so the terminal is
++				 * already the OCV.
++				 */
++				if (bat->info->constant_charge_current_max_ua > 0 &&
++				    (s64)bat->vbat_now + 20000 < (s64)vfloat) {
++					s64 m;
++
++					m = (s64)bat->info->constant_charge_current_max_ua *
++					    bat->rbatt_uohm / 1000000;
++					margin = (u32)clamp_val(m, 50000, 350000);
++				}
++
++				bat->ocv_now = bat->vbat_now > margin ?
++					       bat->vbat_now - margin : bat->vbat_now;
++			} else {
++				bat->ocv_now = bat->vbat_now +
++					       PM8916_BMS_VM_BOOT_IR_UV;
++			}
++		}
++		bat->ocv_now = clamp(bat->ocv_now,
++				     (unsigned int)PM8916_BMS_VM_OCV_MIN_UV,
++				     (unsigned int)bat->info->voltage_max_design_uv);
++		bat->ocv_valid = true;
++		bat->boot_vmax = bat->vbat_now;
++		bat->boot_until_ns = now_ns +
++				     PM8916_BMS_VM_BOOT_REFINE_MS * NSEC_PER_MSEC;
++
++		/* Seed the reported capacity before userspace reads it */
++		if (used_stored) {
++			bat->reported_cap_upct = (s64)bat->stored_cap * 1000000;
++		} else {
++			raw = power_supply_batinfo_ocv2cap(bat->info, bat->ocv_now, 25);
++			if (raw >= 0)
++				bat->reported_cap_upct =
++					(s64)clamp(raw, 0, 100) * 1000000;
++		}
++	} else if (bat->boot_until_ns) {
++		if (now_ns < bat->boot_until_ns) {
++			if (!bat->boot_charging) {
++				if (bat->vbat_now > bat->boot_vmax)
++					bat->boot_vmax = bat->vbat_now;
++				if (bat->boot_vmax + PM8916_BMS_VM_BOOT_REFINE_MARGIN_UV >
++				    bat->ocv_now)
++					bat->ocv_now = bat->boot_vmax +
++						       PM8916_BMS_VM_BOOT_REFINE_MARGIN_UV;
++			}
++		} else {
++			bat->boot_until_ns = 0;
++		}
++	}
+ 
+-	if ((supplied && delta > 0) || (!supplied && delta < 0))
+-		if (abs(delta) < 25000) /* 0.025v */
+-			bat->fake_ocv += delta;
+-
+-	if (!supplied && bat->fake_ocv < bat->vbat_now)
+-		bat->fake_ocv = bat->vbat_now;
++	pm8916_bms_vm_update_ocv(bat, dt_ms);
++	pm8916_bms_vm_update_capacity(bat, dt_ms);
++	pm8916_bms_vm_backup(bat, now_ns);
++	changed = true;
+ 
++ack:
++	/* Ack the FIFO interrupt */
+ 	regmap_write(bat->regmap, bat->reg + PM8916_BMS_VM_STATUS1, 0);
+ 	regmap_read(bat->regmap, bat->reg + PM8916_BMS_VM_STATUS1, &tmp);
+ 
+-	if (PM8916_BMS_VM_FSM_STATE(tmp) == PM8916_BMS_VM_FSM_STATE_S2 &&
+-	    bat->fake_ocv < bat->vbat_now - 10000 /* 0.01v */) {
+-		bat->fake_ocv += 4000; /* 0.004v */
+-	}
+-
+-	if (supplied && bat->fake_ocv > info->voltage_max_design_uv)
+-		bat->fake_ocv = info->voltage_max_design_uv;
+-
+-	power_supply_changed(bat->battery);
++	if (changed)
++		power_supply_changed(bat->battery);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -223,11 +560,6 @@
+ 	if (irq < 0)
+ 		return irq;
+ 
+-	ret = devm_request_threaded_irq(dev, irq, NULL, pm8916_bms_vm_fifo_update_done_irq,
+-					IRQF_ONESHOT, "pm8916_vm_bms", bat);
+-	if (ret)
+-		return ret;
+-
+ 	ret = regmap_bulk_read(bat->regmap, bat->reg + PM8916_PERPH_TYPE, &tmp, 2);
+ 	if (ret)
+ 		goto comm_error;
+@@ -252,15 +584,45 @@
+ 	if (ret)
+ 		goto comm_error;
+ 
++	/*
++	 * Read the S3/PON OCV but do not trust it blindly: this device can run
++	 * for days without suspending (stale register) and a suspend while
++	 * charging stores the float voltage. The first FIFO interrupt checks
++	 * it against the terminal voltage and uses it only if it is plausible.
++	 */
+ 	ret = regmap_bulk_read(bat->regmap,
+ 			       bat->reg + PM8916_BMS_VM_S3_S7_OCV_DATA0, &tmp, 2);
+ 	if (ret)
+ 		goto comm_error;
++	if (tmp * 300 > PM8916_BMS_VM_VBAT_OFFSET_UV)
++		bat->last_ocv = tmp * 300 - PM8916_BMS_VM_VBAT_OFFSET_UV;
+ 
+-	bat->last_ocv_time = ktime_get_seconds();
+-	bat->last_ocv = tmp * 300;
+-	bat->vbat_now = bat->last_ocv;
+-	bat->fake_ocv = bat->last_ocv;
++	/*
++	 * PMIC-backed shutdown OCV/SoC, shared with Android/TWRP. This is
++	 * refreshed by us every few seconds, so it is far more reliable than
++	 * the S3 register on a device that rarely suspends.
++	 */
++	ret = regmap_read(bat->regmap, bat->reg + PM8916_BMS_VM_SOC_BACKUP_REG, &tmp);
++	if (!ret) {
++		u8 stored_soc = tmp & 0xff;
++		u16 stored_ocv_mv = 0;
++
++		ret = regmap_bulk_read(bat->regmap,
++				       bat->reg + PM8916_BMS_VM_OCV_BACKUP_REG,
++				       &stored_ocv_mv, 2);
++		if (!ret && stored_ocv_mv >= 2500 && stored_ocv_mv <= 4600 &&
++		    stored_soc != 0 && stored_soc != 0xff) {
++			int stored_cap = (stored_soc >> 1) - 1;
++
++			if (stored_cap >= 0 && stored_cap <= 100) {
++				bat->stored_ocv = stored_ocv_mv * 1000;
++				bat->stored_cap = stored_cap;
++				bat->stored_valid = true;
++			}
++		}
++	}
++
++	bat->reported_cap_upct = -1;
+ 
+ 	psy_cfg.drv_data = bat;
+ 	psy_cfg.of_node = dev->of_node;
+@@ -273,8 +635,32 @@
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "Unable to get battery info\n");
+ 
++	if (bat->info->voltage_max_design_uv <= 0)
++		bat->info->voltage_max_design_uv = PM8916_BMS_VM_DEFAULT_VMAX_UV;
++	if (bat->info->voltage_min_design_uv <= 0)
++		bat->info->voltage_min_design_uv = PM8916_BMS_VM_DEFAULT_VMIN_UV;
++
++	bat->capacity_uah = bat->info->charge_full_design_uah > 0 ?
++			    bat->info->charge_full_design_uah :
++			    PM8916_BMS_VM_DEFAULT_CAPACITY_UAH;
++	bat->rbatt_uohm = bat->info->factory_internal_resistance_uohm > 0 ?
++			  bat->info->factory_internal_resistance_uohm :
++			  PM8916_BMS_VM_DEFAULT_RBATT_UOHM;
++
++	bat->last_update_ns = ktime_get_ns();
++
+ 	platform_set_drvdata(pdev, bat);
+ 
++	/*
++	 * The IRQ handler dereferences bat->info, so only request it once
++	 * everything is in place (it used to be requested before the
++	 * battery info was even read).
++	 */
++	ret = devm_request_threaded_irq(dev, irq, NULL, pm8916_bms_vm_fifo_update_done_irq,
++					IRQF_ONESHOT, "pm8916_vm_bms", bat);
++	if (ret)
++		return ret;
++
+ 	return 0;
+ 
+ comm_error:
+@@ -284,7 +670,21 @@
+ static int pm8916_bms_vm_battery_suspend(struct platform_device *pdev, pm_message_t state)
+ {
+ 	struct pm8916_bms_vm_battery *bat = platform_get_drvdata(pdev);
+-	int ret;
++	int ret, supplied;
++
++	/*
++	 * Forcing S3 while the charger is connected would not measure the
++	 * battery OCV: the terminal is held at the charger's output, so the
++	 * register would end up with the float voltage. Android's
++	 * qpnp-vm-bms also only forces S3 when the battery is not charging.
++	 * Keep the FSM running instead and do not touch the OCV anchor on
++	 * resume (s3_forced stays false).
++	 */
++	supplied = power_supply_am_i_supplied(bat->battery);
++	if (supplied > 0) {
++		bat->s3_forced = false;
++		return 0;
++	}
+ 
+ 	/*
+ 	 * Due to a hardware quirk the FSM doesn't switch states normally.
+@@ -301,6 +701,8 @@
+ 	if (ret)
+ 		goto error;
+ 
++	bat->s3_forced = true;
++
+ 	return 0;
+ 
+ error:
+@@ -311,15 +713,42 @@
+ static int pm8916_bms_vm_battery_resume(struct platform_device *pdev)
+ {
+ 	struct pm8916_bms_vm_battery *bat = platform_get_drvdata(pdev);
+-	int ret;
++	int ret, cap;
+ 	unsigned int tmp;
+ 
+-	ret = regmap_bulk_read(bat->regmap,
+-			       bat->reg + PM8916_BMS_VM_S3_S7_OCV_DATA0, &tmp, 2);
++	if (bat->s3_forced) {
++		bat->s3_forced = false;
+ 
+-	bat->last_ocv_time = ktime_get_seconds();
+-	bat->last_ocv = tmp * 300;
+-	bat->fake_ocv = bat->last_ocv;
++		ret = regmap_bulk_read(bat->regmap,
++				       bat->reg + PM8916_BMS_VM_S3_S7_OCV_DATA0, &tmp, 2);
++		if (ret) {
++			dev_warn(bat->dev, "Failed to read S3 OCV: %d\n", ret);
++		} else if (tmp * 300 > PM8916_BMS_VM_VBAT_OFFSET_UV) {
++			/* The BMS ADC has the same offset as the FIFO path */
++			bat->last_ocv = tmp * 300 - PM8916_BMS_VM_VBAT_OFFSET_UV;
++
++			/*
++			 * The S3 measurement was taken while the battery
++			 * was relaxed, so it is the best anchor available.
++			 * The screen was off, so correcting the reported
++			 * capacity here is not visible as a jump.
++			 */
++			if (pm8916_bms_vm_valid_ocv(bat->last_ocv)) {
++				bat->ocv_now = bat->last_ocv;
++				bat->vbat_now = bat->last_ocv;
++				bat->vbat_valid = true;
++				bat->ocv_valid = true;
++				bat->last_update_ns = ktime_get_ns();
++				bat->boot_until_ns = 0;
++
++				cap = power_supply_batinfo_ocv2cap(bat->info,
++								   bat->ocv_now, 25);
++				if (cap >= 0)
++					bat->reported_cap_upct =
++						(s64)clamp(cap, 0, 100) * 1000000;
++			}
++		}
++	}
+ 
+ 	ret = regmap_write(bat->regmap,
+ 			   bat->reg + PM8916_SEC_ACCESS, PM8916_SEC_MAGIC);

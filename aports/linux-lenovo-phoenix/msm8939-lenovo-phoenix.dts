@@ -40,7 +40,16 @@
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4350000>;
 		constant-charge-voltage-max-microvolt = <4350000>;
+		/* downstream qcom,fastchg-current-max-ma = 1800, iterm = 100;
+		 * without these the smb347 driver leaves the SMB358 on its OTP
+		 * FCC/termination, which charges this pack very slowly. */
+		constant-charge-current-max-microamp = <1800000>;
+		charge-term-current-microamp = <100000>;
 		charge-full-design-microamp-hours = <3500000>;
+		/* 25C internal resistance from the same downstream profile
+		 * (qcom,default-rbatt-mohm = <126>); the VM-BMS has no
+		 * current sense, the driver uses this for its IR observer. */
+		factory-internal-resistance-micro-ohms = <126000>;
 		/* OCV->SoC: downstream pc-temp-ocv-lut 25C column
 		 * (batterydata-qrd-skuk-scud-4v35-3600mah.dtsi).
 		 * Without this, ocv2cap returns -EINVAL and capacity reads 0%

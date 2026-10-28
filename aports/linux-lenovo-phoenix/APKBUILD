@@ -161,7 +161,40 @@ pkgver=6.12.1
 # a second "vcodec0_core" entry, so the second subcore clock never got
 # set_rate and stayed at its boot rate); the enabled clock set is unchanged,
 # only the fail-unwind labels differ.
-pkgrel=83
+# r84 battery gauge (2026-10-26, pkgrel 83->84): replaces
+# pm8916-bms-vm-fake-ocv-snap.patch with pm8916-bms-vm-ocv-observer.patch.
+# The VM-BMS has no current sense; the old code fed the loaded terminal
+# voltage to the OCV table, so any load step (or unplug, 4.35V float ->
+# OCV) collapsed the percentage in seconds and rest bounced it back.
+# The observer estimates I = (OCV - VBAT) / Rbatt and integrates it into
+# the OCV, so only real charge movement changes the displayed value.
+# Rbatt comes from the battery node (factory-internal-resistance-micro-ohms,
+# 126 mOhm = downstream qcom,default-rbatt-mohm).
+# r85 battery boot anchor (2026-10-27, pkgrel 84->85): the phone can run for
+# days without suspending, so the S3 OCV read at probe could be from the last
+# suspend (often a charging float, 4.35V) -> every reboot showed 100%. Do not
+# use S3 at boot any more: start from the terminal voltage (+IR allowance) and
+# refine with the highest terminal voltage seen during the first minute.
+# Suspend skips forcing S3 while charging (Android qpnp-vm-bms does the same)
+# and resume only re-anchors if S3 was actually measured.
+# r86 charge current (2026-10-27, pkgrel 85->86): the battery node now carries
+# the downstream fast-charge profile (1.8A FCC, 100mA termination), which the
+# smb347 driver programs into the SMB358; without it the chip keeps its OTP
+# default and charges very slowly. The BMS boot-while-charging IR estimate also
+# uses this FCC instead of a blind 100mV (1.8A * 126mOhm = 227mV).
+# r87 VBAT offset + full-charge boot anchor (2026-10-28, pkgrel 86->87):
+# the VM-BMS raw VBAT reads ~100mV high on this board (at the SMB358 4.34V
+# float the averaged FIFO value is ~4.448V), so restore the offset that the
+# original fork hack applied. The boot-while-charging OCV init also applied
+# the 1.8A FCC IR margin even after EOC (anchored full at ~87%); only use it
+# while the charger reports CHARGING, use 0 for FULL/NOT_CHARGING.
+# r88 TWRP alignment (2026-10-28, pkgrel 87->88): use the PMIC-backed
+# shutdown OCV/SoC registers (B1..B2 in mV, B0 = (soc+1)<<1) that Android and
+# TWRP write: read them at probe and refresh them every 10s, so a reboot
+# starts from the last real value (TWRP 97% == stored OCV 4.28V) instead of a
+# guess. If missing/inconsistent, fall back to the S3 OCV (|OCV-VBAT| <=
+# 400mV) and finally to the terminal voltage + IR.
+pkgrel=88
 # When making kernel config changes, keep this fork's config self-contained:
 # there is no pmos.config PR target like the generic package had, but please
 # mirror any still-relevant change upstream when the feature is upstreamed.
@@ -221,7 +254,7 @@ source="
 	qcom-pon.c
 	ov13850.c
 	ov13850.kconfig
-	pm8916-bms-vm-fake-ocv-snap.patch
+	pm8916-bms-vm-ocv-observer.patch
 	qcom-iommu-resv-regions.patch
 	venus-msm8939-res.patch
 	venus-v1-vcodec-clks.patch
@@ -333,13 +366,13 @@ e8ffde1442238766daa04f29a8d19ded1a812379b02b921401d9bfa4ad31eeb3dbda6e4cf57d7c74
 2a5c20bd9da57e42767fa70eb1aa27623e4013b5dadc3f35508e1497fb4bfd53d8775c372eea8c4d95bd12eff43f23c7a4acfb219313dcb7915643804fc73cb2  0001-kbuild-Add-fno-builtin-wcslen.patch
 8235a3857be27937ca2d1a166f4cacb0ddc56b404568e87aa01c99f03ff43a7c4d4d8f2f523bdc3a899493847da9898a7ef6988b55c5b2fb76b88377d3d86fdf  smb347-smb358-input-detect.patch
 6fe6abdc4fff567c25ac47630ae706d12a2ae6bb584e483bb462309bffd6b805d783ea62e569a7456a3eaec1b36e685f9beb858421350801358ad822cdb66ffa  smb347-smb358-otg-i2c-mode.patch
-0978c722e291bf53f11f3c37444507e8291bf6ac7d6889f522bb061fbc7aee2a22339fe0c3f185e3c0c86fd1d68761b9721368e8558e4e9ca2d5a327695b2a08  msm8939-lenovo-phoenix.dts
+cc24bf8c0021768995fbb41259f50b78fe9f11c29f1c0cec0ad3e8a0e7444d2c8f2520b122e45c507659aaa503cc8d10946c1e64b3dba83e83418c3d356f0fb4  msm8939-lenovo-phoenix.dts
 2f9b3250df108e3c82a89d9bb8a31df6be479247f347000b20109bbfa807e5632964421baadce594158968973c212dd721577dc0e4d435414f7e15ca8377b431  panel-novatek-nt35532.c
 5ae2a5eac4847d3c6d94f5357edcbf1c6d5c6bc8610a89a67bf13bc89e8934e4bd21b7603311ac79e35dd4a37cfef5f30ed1dcc6a8cca5644ddb62f6a14ce2c2  panel-novatek-nt35532.kconfig
 1dee0417fad9a1a3f1964750e05704d62a394337571a92f9f0903db0530279e224c68d6cdffd4d9eeccc51f4e2269bfbcf5577e375aa747a2cb579decd2f5598  qcom-pon.c
 2aa9eec8749f15f01be59e2380048af7dc4c399709c7d9d1a8a237bda853b75b585f9cf94f172ec243176b2fb89171fcbac7a1b34a016662b2e145919ef09765  ov13850.c
 94464b44bdd4427e7c033865c07b156e063020e60fdb1194a0dd721ce445f40c9ed98649b6c396e0fe53b9a0cd13589354c9af61cfd050f1c8f40fc32492c289  ov13850.kconfig
-c08642c7113e0171c89fe2835b03b8314b7f0132dc473770004158e66dc1c627cbc1491901fc5445b05f380998935e74d2be2d8d057383407906cd833908cce8  pm8916-bms-vm-fake-ocv-snap.patch
+33604a206f90508f8ce97c85e0506de00f5107a468111f7b3595ccee632f6287adf4467bfed5c59aae7466cc969f06ed7a85130e411828c028e83259e294f820  pm8916-bms-vm-ocv-observer.patch
 cd7bbbd751fe908dd66d43e2f3d94e9add086238ba1507e1927ad8d66f3777d462dbaf538979935b0a61f8f252123f0df5cab4ab91a93446d56c9c66d29e508d  qcom-iommu-resv-regions.patch
 03703dd62d2cef752b471435c47b078d8a475a57a9188320d787f5fd7b2534276734ada07d0aee418ea023f94ec4656c7da8cb25349d5809961f398fdd362b3f  venus-msm8939-res.patch
 7db6b406eab010f28fb8c48791bd2a0e8520f95aebb7978464adbca939a80862f6134e07d8df0d33eb206a37313ce2d2bec26270a860f7f38e365555278f3a1a  venus-v1-vcodec-clks.patch

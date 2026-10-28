@@ -90,12 +90,108 @@
   纠正为 3500mAh. 验证: 刚下充电器应 ~100%, 用一会看电压-百分比曲线合理否.
 - 遗留: STATUS 恒 discharging (lbc charger 未接, 同 wt82918 现状), 仅显示问题.
 
-## 电池 snap-down 补丁 (2026-10-14, 待验证)
+## 电池 snap-down 补丁 (2026-10-14, 已被 2026-10-26 观察器取代)
 - 现象: 拔充电器后 4043mV 仍显示 97% (按表应 ~74%).
 - 根因: 驱动只有 snap-up 没有 snap-down; 拔线瞬间 4.35V浮充->OCV 跌 ~0.3V,
   超过 25mV guard 被丢弃, fake_ocv 全程 stranded 高位, 越用越虚 (会死在显示 25%).
 - 修法: power/pm8916-bms-vm-fake-ocv-snap.patch, 放电且 gap>100mV 时 snap 到 vbat.
   负载瞬时下垂误触发也无妨 (snap-up 会自己纠回来). 已 dry-run 验证可打上.
+- 结论: 该补丁只是把 stranded-high 换成了瞬时 snap-down: 负载一大, vbat 低于
+  fake_ocv 超过 100mV 就整段跳下去 (100% -> 22% 几秒), 静置后又跳回来. 见下节.
+
+## 电池 OCV/IR 观察器重写 (2026-10-26, 待验证)
+- 现象: 拔电后几秒内 100% -> 22%, 静置一会又跳回去; Android 无此现象.
+- 根因: VM-BMS 只有电压, 没有电流/OCV. 原逻辑把"负载端电压 - 100mV"直接当 OCV
+  查表, 而 OCV 表低端极陡 (3.74V->20%, 3.69V->10%), 压降 100~300mV 就是几十个
+  百分点; snap-down 补丁把这个误差瞬时化, snap-up 又让它瞬时回弹.
+- 修法: `power/pm8916-bms-vm-ocv-observer.patch` 用电压/IR 观察器替代:
+  `I_est = (OCV_est - VBAT) / Rbatt`, 把 `I_est` 积分成 OCV 位移, 再查 OCV 表.
+  负载阶跃只改变瞬时电流, 不会瞬时改变 OCV/容量; 静置时 VBAT 回升到 OCV, 电流
+  归零, 也不会回跳. 时间常数 ~30min (Rbatt*Q/(dOCV/dSoC)), Rbatt 取 battery 节点
+  `factory-internal-resistance-micro-ohms = <126000>` (下游 default-rbatt-mohm).
+- 其它: 电压取 FIFO 两个样本平均后 2s EMA; 去掉 -100mV 偏移 (上报真实端电压);
+  容量再做 0.05%/s 限速 (差值 >10% 时 0.2%/s), 保证任何估算误差都只能"滑"过去;
+  resume 用 S3 OCV 重新锚定并直接校正显示 (灭屏时不可见); probe 改为 psy/info
+  就绪后再申请 FIFO IRQ (原来 IRQ 可能先于 info 触发).
+- 验证: 已用 `aarch64-linux-gnu-gcc` 对 6.12.1-msm8916 树单编 `pm8916_bms_vm.o`
+  通过, dtb 编译通过; 补丁 `patch -p1` dry-run 通过. pmaports 已接线
+  (`linux-lenovo-phoenix` pkgrel 83->84, checksum/apkbuild_parse 通过).
+  上机观察: 拔电/大负载/静置时百分比应连续, 不再秒降/回跳; 低电量到 1~2%
+  附近关机.
+
+## 重启后电量回到 100% 修复 (2026-10-27, 待验证)
+- 现象: 不插线用一段时间后 reboot, 开机电量直接回到 100% (重启前不是 100).
+- 根因: probe 把 S3 OCV 寄存器当初始锚点. 本机常当桌面用, 几天不 suspend,
+  寄存器还是上次 suspend 时的值; 更糟的是旧 suspend 无条件强制 S3, 充电时
+  测到的就是 4.35V 浮充电压. 于是每次开机都从 100% 起步, 观察器要 ~30min
+  才慢慢降下来.
+- 修法: probe 不再使用 S3 OCV. 第一条有效 FIFO 用端电压起步:
+  放电 `vbat + 150mV`, 充电 `vbat - 100mV`; 之后 60s 内用见过的最高端电压
+  `+30mV` 修正 (只升不降, 静置时会落到真实 OCV). suspend 改为充电时不强制
+  S3 (Android qpnp-vm-bms 同样只在不充电时测 OCV); resume 只有确实强制过 S3
+  才读寄存器重锚. pkgrel 84->85.
+- 验证: 单编/dry-run 通过; 上机重启应不再跳 100, 开机值应接近重启前.
+
+## 充电慢 (2026-10-27, 待验证)
+- 现象: 电量显示正常后, 感觉充电明显变慢.
+- 根因 1: battery 节点只给了 float 电压, 没给 FCC/termination; 主线 smb347
+  驱动对缺省项不写寄存器, SMB358 一直用 OTP 默认快充电流/终止电流 (偏低).
+  下游 profile 是 `qcom,fastchg-current-max-ma = 1800`、`iterm = 100mA`.
+  旧电量算法在 CV 阶段每样本 +4mV, 会很快跳到 100, 掩盖了真实充电速度.
+- 根因 2: 开机时若正插着充电器, BMS 的充电 IR 余量固定 100mV; 1.8A 下实际
+  IR 压降 1.8A*126mOhm ≈ 227mV, 观察器会把 OCV 估高、显示充电速度偏慢.
+- 修法 (pkgrel 85->86): battery 节点加
+  `constant-charge-current-max-microamp = <1800000>`、
+  `charge-term-current-microamp = <100000>` (smb347 会写进 SMB358);
+  驱动开机充电 IR 余量改用 `constant-charge-current-max-microamp * Rbatt`
+  (钳 50~350mV), 不再固定 100mV.
+- 验证: 充电时 `cat /sys/class/power_supply/smb347-usb/constant_charge_current`
+  应报 ~1800000 (µA); 观察 10 分钟电量涨幅, 1.8A 对应约 8~9 点/10min.
+  若仍慢但 FCC 已是 1800mA, 瓶颈在输入限流 (适配器/线材/APSD/AICL), 再查
+  `constant_charge_voltage`、`online` 与 dmesg.
+
+## 满电重启 87% / voltage_now 偏高 (2026-10-28, 待验证)
+- 现象: 充到 100 后重启变 87% 且基本不动; 拔线后变 94%;
+  `voltage_now` = 4448046.
+- 根因 1: VM-BMS 的 VBAT 原始读数在这块板上高约 100mV (SMB358 浮充硬件档
+  4.34V 时, FIFO 两个样本平均约 4.448V). 原 fork 的 `-100mV` 是**校准偏移**,
+  不是 IR 估算; r84 去掉后 voltage_now/OCV 整体高 100mV, 满电读数才会到 4.448.
+- 根因 2: r86 开机充电锚点无条件按 1.8A FCC 减 IR 余量 (227mV). EOC/浮充时
+  电流已接近 0, 却仍减 227mV -> OCV 4.348-0.227=4.121 -> 87%; 拔线后终端仍
+  高于这个估计, 观察器按"充电"把它抬到 94%.
+- 修法 (pkgrel 86->87): FIFO 路径和 S3 OCV 都恢复 `-100mV` 偏移; 开机充电
+  锚点只在 charger `STATUS==CHARGING` 时用 `FCC*Rbatt` 余量,
+  FULL/NOT_CHARGING 用 0 (满电时 OCV=端电压).
+- 验证: 满电 `voltage_now` 应约 4.34V (残余 ~8mV), capacity 100; 拔线后保持,
+  不再跳到 94.
+
+## 与 TWRP 参考不符 (73% vs 97%) (2026-10-28, 待验证)
+- 现象: 本系统开机显示 73%, 同一块电池进 TWRP 显示 97%.
+- 根因 1: 开机充电锚点仍按 1.8A FCC 减 IR 余量 (227mV). 97% 已在 CV/taper,
+  实际电流很小; 4.34-0.227=4.11 -> ~86%, 再叠加负载/首样本就是 73% 一带.
+- 根因 2: r85 起 boot 完全不用 S3 OCV, 丢掉了 Android/TWRP 实际使用的静止
+  OCV 锚点.
+- 修法 (pkgrel 87->88):
+  - 读写 PMIC 持久化寄存器 `B0`/`B1`（`BMS_SOC_REG`/`BMS_OCV_REG`，Android 和
+    TWRP 用的是同一组）：probe 时读取上次的 OCV/SoC，运行中每 10s 刷新。
+    TWRP 的 97% / 4.28V 正是来自这里（dmesg:
+    `shutdown_ocv=4280000 shutdown_soc=97`），所以重启/进 recovery 都能接上，
+    不再靠猜。
+  - 寄存器无效或与端电压差 >600mV 时，回退到 S3 OCV（|OCV-VBAT| <= 400mV），
+    再不行才用端电压 + IR。
+  - 回退充电时只有端电压明显低于 float (`vbat+20mV < float`) 才减
+    `FCC*Rbatt`；接近 float 时余量 0 (taper 电流已很小).
+- 验证: 97% 状态下开机应与 TWRP 相差几个点内; 满电重启仍 100; 50% 左右
+  重启不应再跳到 100 (S3 若过期会超出窗口).
+- 备注: TWRP 里 `usb/current_max=500000` (接电脑 USB) → 实际只有 500mA;
+  墙充下才会走 1.8A, 充电慢不全是 FCC/驱动问题.
+
+## 关机后自动重启 (2026-10-27, 待查)
+- 现象: **不插线**关机后设备自动重启 (插线自动开机是已知 lk2nd/PMIC 限制,
+  见上, 但本次不是).
+- 待查: `/sys/fs/pstore/console-ramoops-0` (ramoops 已配), 看 qcom-pon
+  poweroff 是否执行、是否走到 `Power down`, 以及是否看门狗复位.
+- 与电量补丁无直接关系: `.suspend` 不参与 poweroff/reboot 路径.
 
 ## 音频初版 (2026-10-14, 待验证)
 - 本机之前零音频节点. 下游: 内部 codec (msm8x16, micbias1-ext-cap),

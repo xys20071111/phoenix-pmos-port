@@ -64,8 +64,12 @@ magnetometer (no mainline driver).
   Register map from the Oculus Go reference (see below). Superseded
   2026-10-18 by the upstream smb347 driver — see the
   `smb347-smb358-*` patch entries above.
-- `power/pm8916-bms-vm-fake-ocv-snap.patch` — snap fake_ocv down on fast
-  discharge (else SoC strands high after unplug).
+- `power/pm8916-bms-vm-ocv-observer.patch` — replace the "use vbat as
+  OCV" hack with a voltage/IR observer: current is estimated from
+  `(OCV - VBAT) / Rbatt` and integrated, so load steps and rest no longer
+  make the percentage jump; S3 OCV re-anchors it on resume.
+- `factory-internal-resistance-micro-ohms = <126000>` on the `battery`
+  node feeds the observer (downstream `default-rbatt-mohm = 126`).
 - `audio/msm8916-audio-init.sh` + `audio/90-msm8916-audio.rules` — udev
   applies the proven mixer set when the sound card appears.
 - `0002-dts-msm8916-phoenix-dtb-files.patch` — lk2nd patch so `fdtdir`
